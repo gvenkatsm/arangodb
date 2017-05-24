@@ -1223,9 +1223,19 @@ arangodb::consensus::index_t Agent::rebuildDBs() {
 
 /// Compact read db
 void Agent::compact() {
-  rebuildDBs();
-  _state.compact(_lastAppliedIndex-_config.compactionKeepSize());
+  // We do not optimize for the case of _config.compactionKeepSize() == 0,
+  // since one usually would like to keep a part of the recent log. Therefore
+  // we cannot use the _readDB ever, since we have to compute a state of the
+  // key/value space well before _lastAppliedIndex anyway:
   _nextCompactionAfter += _config.compactionStepSize();
+  if (_lastAppliedIndex > _config.compactionKeepSize()) {
+    // If the keep size is too large, we do not yet compact
+    if (!_state.compact(_lastAppliedIndex-_config.compactionKeepSize())) {
+      LOG_TOPIC(WARN, Logger::AGENCY) << "Compaction for index "
+        << _lastAppliedIndex - _config.compactionKeepSize()
+        << " did not work.";
+    }
+  }
 }
 
 

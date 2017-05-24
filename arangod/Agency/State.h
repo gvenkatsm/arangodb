@@ -25,6 +25,7 @@
 #define ARANGOD_CONSENSUS_STATE_H 1
 
 #include "AgencyCommon.h"
+#include "Agency/Store.h"
 #include "Cluster/ClusterComm.h"
 #include "Utils/OperationOptions.h"
 
@@ -153,6 +154,11 @@ class State {
   bool loadRemaining();
   bool loadOrPersistConfiguration();
 
+  /// @brief load a compacted snapshot, returns true if successfull and false
+  /// otherwise. In case of success store and index are modified. The store
+  /// is reset to the state after log index `index` has been applied.
+  bool loadLastCompactedSnapshot(Store& store, index_t& index);
+
   /// @brief Check collections
   bool checkCollections();
 
@@ -177,6 +183,10 @@ class State {
   /// @brief Persist read database
   bool persistReadDB(arangodb::consensus::index_t cind);
 
+  /// @brief Persist a compaction snapshot
+  bool persistCompactionSnapshot(arangodb::consensus::index_t cind,
+                                 arangodb::consensus::Store& snapshot);
+
   /// @brief Our agent
   Agent* _agent;
 
@@ -195,7 +205,8 @@ class State {
   /// @brief Our query registry
   aql::QueryRegistry* _queryRegistry;
 
-  /// @brief Current log offset
+  /// @brief Current log offset, this is the index that is stored at position
+  /// 0 in the deque _log.
   size_t _cur;
 
   /// @brief Operation options

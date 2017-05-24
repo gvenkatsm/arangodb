@@ -139,10 +139,10 @@ class Store : public arangodb::Thread {
 
   friend class Node;
 
- private:
-
   /// @brief Apply single slice
   bool applies(arangodb::velocypack::Slice const&);
+
+ private:
 
   /// @brief Remove time to live entries for uri
   void removeTTL(std::string const&);

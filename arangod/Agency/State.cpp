@@ -97,18 +97,18 @@ bool State::persist(arangodb::consensus::index_t index, term_t term,
     body.add("clientId", Value(clientId));
     body.add("timestamp", Value(timestamp()));
   }
-  
+
   TRI_ASSERT(_vocbase != nullptr);
   auto transactionContext =
     std::make_shared<transaction::StandaloneContext>(_vocbase);
   SingleCollectionTransaction trx(
     transactionContext, "log", AccessMode::Type::WRITE);
-  
+
   Result res = trx.begin();
   if (!res.ok()) {
     THROW_ARANGO_EXCEPTION(res);
   }
-  
+
   OperationResult result;
   try {
     result = trx.insert("log", body.slice(), _options);
@@ -116,7 +116,7 @@ bool State::persist(arangodb::consensus::index_t index, term_t term,
     LOG_TOPIC(ERR, Logger::AGENCY)
       << "Failed to persist log entry:" << e.what();
   }
-  
+
   res = trx.finish(result.code);
 
   return res.ok();
@@ -126,11 +126,11 @@ bool State::persist(arangodb::consensus::index_t index, term_t term,
 /// Log transaction (leader)
 std::vector<arangodb::consensus::index_t> State::log(
   query_t const& transactions, std::vector<bool> const& applicable, term_t term) {
-  
+
   std::vector<arangodb::consensus::index_t> idx(applicable.size());
-  
+
   size_t j = 0;
-  
+
   auto const& slice = transactions->slice();
 
   if (!slice.isArray()) {
@@ -527,6 +527,47 @@ bool State::loadPersisted() {
 }
 
 /// Load compaction collection
+bool State::loadLastCompactedSnapshot(Store& store, index_t& index) {
+  auto bindVars = std::make_shared<VPackBuilder>();
+  bindVars->openObject();
+  bindVars->close();
+ 
+  std::string const aql(
+      std::string("FOR c IN compact SORT c._key DESC LIMIT 1 RETURN c"));
+  arangodb::aql::Query query(false, _vocbase, aql::QueryString(aql), bindVars,
+                             nullptr, arangodb::aql::PART_MAIN);
+
+  auto queryResult = query.execute(QueryRegistryFeature::QUERY_REGISTRY);
+
+  if (queryResult.code != TRI_ERROR_NO_ERROR) {
+    THROW_ARANGO_EXCEPTION_MESSAGE(queryResult.code, queryResult.details);
+  }
+
+  VPackSlice result = queryResult.result->slice();
+
+  if (result.isArray()) {
+    if (result.length() == 1) {
+      VPackSlice i = result[0];
+      VPackSlice ii = i.resolveExternals();
+      try {
+        store = ii.get("readDB");
+        index = std::stoul(ii.get("_key").copyString());
+        return true;
+      } catch (std::exception const& e) {
+        LOG_TOPIC(ERR, Logger::AGENCY) << e.what() << " " << __FILE__
+                                       << __LINE__;
+      }
+    } else if (result.length() == 0) {
+      // No compaction snapshot yet
+      index = std::numeric_limits<index_t>::max();
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/// Load compaction collection
 bool State::loadCompacted() {
   auto bindVars = std::make_shared<VPackBuilder>();
   bindVars->openObject();
@@ -713,22 +754,45 @@ bool State::find(arangodb::consensus::index_t prevIndex, term_t prevTerm) {
 
 /// Log compaction
 bool State::compact(arangodb::consensus::index_t cind) {
-  bool saved = persistReadDB(cind);
-
-  if (saved) {
-    compactVolatile(cind);
-
-    try {
-      compactPersisted(cind);
-      removeObsolete(cind);
-    } catch (std::exception const& e) {
-      LOG_TOPIC(ERR, Logger::AGENCY) << "Failed to compact persisted store.";
-      LOG_TOPIC(ERR, Logger::AGENCY) << e.what();
-    }
-    return true;
-  } else {
+  // We need to compute the state at index cind and 
+  //   cind <= _lastAppliedIndex
+  // and usually it is < because compactionKeepSize > 0. We start at the
+  // latest compaction state and advance from there:
+  Store snapshot(_agent, "snapshot");
+  index_t index;
+  if (!loadLastCompactedSnapshot(snapshot, index)) {
     return false;
   }
+  if (index != std::numeric_limits<index_t>::max() && index > cind) {
+    LOG_TOPIC(ERR, Logger::AGENCY)
+      << "Strange, last compaction snapshot " << index << " is younger than "
+      << "currently attempted snapshot " << cind;
+    return false;
+  }
+  if (index == std::numeric_limits<index_t>::max() || index < cind) {
+    // Now apply log entries to snapshot up to and including index cind:
+    auto logs = slices(index == std::numeric_limits<index_t>::max() ?
+                                0 : index + 1, cind);
+    for (VPackSlice slice : logs) {
+      snapshot.applies(slice);
+    }
+    if (!persistCompactionSnapshot(cind, snapshot)) {
+      LOG_TOPIC(ERR, Logger::AGENCY)
+        << "Could not persist compaction snapshot.";
+      return false;
+    }
+  }
+
+  // Now clean up old stuff which is included in the latest compaction snapshot:
+  try {
+    compactVolatile(cind);
+    compactPersisted(cind);
+    removeObsolete(cind);
+  } catch (std::exception const& e) {
+    LOG_TOPIC(ERR, Logger::AGENCY) << "Failed to compact persisted store.";
+    LOG_TOPIC(ERR, Logger::AGENCY) << e.what();
+  }
+  return true;
 }
 
 /// Compact volatile state
@@ -750,7 +814,7 @@ bool State::compactPersisted(arangodb::consensus::index_t cind) {
   std::stringstream i_str;
   i_str << std::setw(20) << std::setfill('0') << cind;
 
-  std::string const aql(std::string("FOR l IN log FILTER l._key < \"") +
+  std::string const aql(std::string("FOR l IN log FILTER l._key <= \"") +
                         i_str.str() + "\" REMOVE l IN log");
 
   arangodb::aql::Query query(false, _vocbase, aql::QueryString(aql), bindVars,
@@ -804,7 +868,7 @@ bool State::persistReadDB(arangodb::consensus::index_t cind) {
     Builder store;
     { VPackObjectBuilder s(&store);
       store.add(VPackValue("readDB"));
-      { VPackArrayBuilder a(&store); 
+      { VPackArrayBuilder a(&store);
         _agent->readDB().dumpToBuilder(store); }
       store.add("_key", VPackValue(i_str.str())); }
 
@@ -827,6 +891,42 @@ bool State::persistReadDB(arangodb::consensus::index_t cind) {
   }
 
   LOG_TOPIC(ERR, Logger::AGENCY) << "Failed to persist read DB for compaction!";
+  return false;
+}
+
+/// Persist a compaction snapshot
+bool State::persistCompactionSnapshot(arangodb::consensus::index_t cind,
+                                      arangodb::consensus::Store& snapshot) {
+  if (checkCollection("compact")) {
+    std::stringstream i_str;
+    i_str << std::setw(20) << std::setfill('0') << cind;
+
+    Builder store;
+    { VPackObjectBuilder s(&store);
+      store.add(VPackValue("readDB"));
+      { VPackArrayBuilder a(&store);
+        snapshot.dumpToBuilder(store); }
+      store.add("_key", VPackValue(i_str.str())); }
+
+    TRI_ASSERT(_vocbase != nullptr);
+    auto transactionContext =
+        std::make_shared<transaction::StandaloneContext>(_vocbase);
+    SingleCollectionTransaction trx(
+      transactionContext, "compact", AccessMode::Type::WRITE);
+
+    Result res = trx.begin();
+
+    if (!res.ok()) {
+      THROW_ARANGO_EXCEPTION(res);
+    }
+
+    auto result = trx.insert("compact", store.slice(), _options);
+    res = trx.finish(result.code);
+
+    return res.ok();
+  }
+
+  LOG_TOPIC(ERR, Logger::AGENCY) << "Failed to persist snapshot for compaction!";
   return false;
 }
 
@@ -870,7 +970,7 @@ query_t State::allLogs() const {
 
   auto bindVars = std::make_shared<VPackBuilder>();
   { VPackObjectBuilder(bindVars.get()); }
-  
+
   std::string const comp("FOR c IN compact SORT c._key RETURN c");
   std::string const logs("FOR l IN log SORT l._key RETURN l");
 
@@ -904,14 +1004,14 @@ query_t State::allLogs() const {
     }
   }
   return everything;
-  
+
 }
 
 std::vector<std::vector<log_t>> State::inquire(query_t const& query) const {
 
   std::vector<std::vector<log_t>> result;
   MUTEX_LOCKER(mutexLocker, _logLock); // Cannot be read lock (Compaction)
-  
+
   if (!query->slice().isArray()) {
       THROW_ARANGO_EXCEPTION_MESSAGE(
         210002,
