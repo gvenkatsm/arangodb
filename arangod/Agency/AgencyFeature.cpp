@@ -48,8 +48,8 @@ AgencyFeature::AgencyFeature(application_features::ApplicationServer* server)
       _supervision(false),
       _waitForSync(true),
       _supervisionFrequency(1.0),
-      _compactionStepSize(200000),
-      _compactionKeepSize(500),
+      _compactionStepSize(200),
+      _compactionKeepSize(0),
       _supervisionGracePeriod(10.0),
       _cmdLineTimings(false)
 {
