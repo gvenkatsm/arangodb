@@ -864,8 +864,28 @@ function agencyTestSuite () {
     testHiddenAgencyWriteDeep: function() {
       var res = accessAgency("write",[[{"/.agency/hans": {"op":"set","new":"fallera"}}]]);
       assertEqual(res.statusCode, 200);
-    } 
-    
+    },
+
+    testLogCompaction: function() {
+      let i;
+      for (i = 0; i < 6000; ++i) {
+        let key = "/key"+i;
+        let trx = [{}];
+        trx[0][key] = "value" + i;
+        let res = accessAgency("write", [trx]);
+        assertEqual(200, res.statusCode);
+      }
+      for (i = 0; i < 6000; ++i) {
+        let res = accessAgency("read", [["/key"+i]]);
+        assertEqual(200, res.statusCode);
+        let key = "key"+i;
+        let correct = [{}];
+        correct[0][key] = "value" + i;
+        assertEqual(correct, res.bodyParsed);
+      }
+
+    }
+
   };
 }
 
