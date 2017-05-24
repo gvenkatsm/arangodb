@@ -60,7 +60,6 @@ using namespace arangodb::rest;
 State::State(std::string const& endpoint)
     : _agent(nullptr),
       _vocbase(nullptr),
-      _endpoint(endpoint),
       _collectionsChecked(false),
       _collectionsLoaded(false),
       _queryRegistry(nullptr),
@@ -428,7 +427,6 @@ log_t State::lastLog() const {
 /// Configure with agent
 bool State::configure(Agent* agent) {
   _agent = agent;
-  _endpoint = agent->endpoint();
   _collectionsChecked = false;
   return true;
 }

@@ -188,7 +188,6 @@ class State {
   */
   mutable arangodb::Mutex _logLock; 
   std::deque<log_t> _log;           /**< @brief  State entries */
-  std::string _endpoint;            /**< @brief persistence end point */
   bool _collectionsChecked;         /**< @brief Collections checked */
   bool _collectionsLoaded;
   std::multimap<std::string,arangodb::consensus::index_t> _clientIdLookupTable;
