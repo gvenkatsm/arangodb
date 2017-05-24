@@ -141,6 +141,11 @@ class State {
   /// @brief Get everything from the state machine
   query_t allLogs() const;
 
+  /// @brief load a compacted snapshot, returns true if successfull and false
+  /// otherwise. In case of success store and index are modified. The store
+  /// is reset to the state after log index `index` has been applied.
+  bool loadLastCompactedSnapshot(Store& store, index_t& index);
+
  private:
   /// @brief Save currentTerm, votedFor, log entries
   bool persist(index_t, term_t, arangodb::velocypack::Slice const&,
@@ -153,11 +158,6 @@ class State {
   bool loadCompacted();
   bool loadRemaining();
   bool loadOrPersistConfiguration();
-
-  /// @brief load a compacted snapshot, returns true if successfull and false
-  /// otherwise. In case of success store and index are modified. The store
-  /// is reset to the state after log index `index` has been applied.
-  bool loadLastCompactedSnapshot(Store& store, index_t& index);
 
   /// @brief Check collections
   bool checkCollections();

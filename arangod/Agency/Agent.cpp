@@ -48,12 +48,10 @@ Agent::Agent(config_t const& config)
     _config(config),
     _lastCommitIndex(0),
     _lastAppliedIndex(0),
-    _lastCompactionIndex(0),
     _leaderCommitIndex(0),
     _spearhead(this),
     _readDB(this),
     _transient(this),
-    _compacted(this),
     _nextCompactionAfter(_config.compactionStepSize()),
     _inception(std::make_unique<Inception>(this)),
     _activator(nullptr),
@@ -1196,22 +1194,25 @@ arangodb::consensus::index_t Agent::rebuildDBs() {
   MUTEX_LOCKER(ioLocker, _ioLock);
   MUTEX_LOCKER(liLocker, _liLock);
 
+  index_t lastCompactionIndex;
+  if (!_state.loadLastCompactedSnapshot(_readDB, lastCompactionIndex)) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_AGENCY_CANNOT_REBUILD_DBS);
+  }
+
   // Apply logs from last applied index to leader's commit index
   LOG_TOPIC(DEBUG, Logger::AGENCY)
     << "Rebuilding key-value stores from index "
-    << _lastCompactionIndex << " to " << _leaderCommitIndex << " " << _state;
+    << lastCompactionIndex << " to " << _leaderCommitIndex << " " << _state;
 
-  auto logs = _state.slices(_lastCompactionIndex+1);
-
-  _spearhead.clear();
-  _spearhead.apply(logs, _leaderCommitIndex, _constituent.term());
-  _readDB.clear();
+  auto logs = _state.slices(lastCompactionIndex+1, _leaderCommitIndex);
+  // Note that the following operation triggers callbacks if we are
+  // leading!
   _readDB.apply(logs, _leaderCommitIndex, _constituent.term());
-  LOG_TOPIC(TRACE, Logger::AGENCY) << "ReadDB: " << _readDB;
+  _spearhead = _readDB;
 
+  LOG_TOPIC(TRACE, Logger::AGENCY) << "ReadDB: " << _readDB;
     
   _lastAppliedIndex = _leaderCommitIndex;
-  //_lastCompactionIndex = _leaderCommitIndex;
   
   LOG_TOPIC(INFO, Logger::AGENCY)
     << id() << " rebuilt key-value stores - serving.";
@@ -1440,32 +1441,34 @@ bool Agent::ready() const {
 
 query_t Agent::buildDB(arangodb::consensus::index_t index) {
 
-  auto builder = std::make_shared<VPackBuilder>();
-  arangodb::consensus::index_t start = 0, end = 0;
-
   Store store(this);
-  {
-
-    MUTEX_LOCKER(ioLocker, _ioLock);
-    store = _compacted;
-
-    MUTEX_LOCKER(liLocker, _liLock);
-    end = _leaderCommitIndex;
-    start = _lastCompactionIndex+1;
-    
+  index_t oldIndex;
+  if (!_state.loadLastCompactedSnapshot(store, oldIndex)) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_AGENCY_CANNOT_REBUILD_DBS);
   }
   
-  if (index > end) {
+  if (index > _leaderCommitIndex) {
     LOG_TOPIC(INFO, Logger::AGENCY)
-      << "Cannot snapshot beyond leaderCommitIndex: " << end;
-    index = end;
-  } else if (index < start) {
+      << "Cannot snapshot beyond leaderCommitIndex: " << _leaderCommitIndex;
+    index = _leaderCommitIndex;
+  } else if (oldIndex != std::numeric_limits<index_t>::max() &&
+             index < oldIndex) {
     LOG_TOPIC(INFO, Logger::AGENCY)
-      << "Cannot snapshot before last compaction index: " << start;
-    index = start+1;
+      << "Cannot snapshot before last compaction index: " << oldIndex;
+    index = oldIndex;
   }
   
-  store.apply(_state.slices(start+1, index), index, _constituent.term());
+  std::vector<VPackSlice> logs;
+  if (oldIndex == std::numeric_limits<index_t>::max()) {
+    logs = _state.slices(0, index);
+  } else if (index > oldIndex) {
+    logs = _state.slices(oldIndex+1, index);
+  }
+  for (VPackSlice s : logs) {
+    store.applies(s);
+  }
+
+  auto builder = std::make_shared<VPackBuilder>();
   store.toBuilder(*builder);
   
   return builder;

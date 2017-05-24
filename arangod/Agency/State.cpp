@@ -573,7 +573,6 @@ bool State::loadCompacted() {
   bindVars->openObject();
   bindVars->close();
 
-  
   std::string const aql(
       std::string("FOR c IN compact SORT c._key DESC LIMIT 1 RETURN c"));
   arangodb::aql::Query query(false, _vocbase, aql::QueryString(aql), bindVars,
