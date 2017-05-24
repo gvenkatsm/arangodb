@@ -228,8 +228,12 @@ RestStatus RestAgencyHandler::handleStore() {
       index = _agent->lastCommitted().second;
     }
     
-    query_t builder = _agent->buildDB(index);
-    generateResult(rest::ResponseCode::OK, builder->slice());
+    try {
+      query_t builder = _agent->buildDB(index);
+      generateResult(rest::ResponseCode::OK, builder->slice());
+    } catch (...) {
+      generateError(rest::ResponseCode::BAD, 400);
+    }
     
   } else {
     generateError(rest::ResponseCode::BAD, 400);

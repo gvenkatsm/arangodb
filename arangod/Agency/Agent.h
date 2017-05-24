@@ -288,9 +288,6 @@ class Agent : public arangodb::Thread,
   /// @brief Last index of the log that has been applied to the readDB
   index_t _lastAppliedIndex;
 
-  /// @brief Last index up to which we have performed log compaction
-  index_t _lastCompactionIndex;
-
   /// @brief Last index that is "committed" in the sense that the leader
   /// has convinced itself that an absolute majority (including the leader)
   /// have written the entry into their log
@@ -304,9 +301,6 @@ class Agent : public arangodb::Thread,
 
   /// @brief Committed (read) kv-store for transient data
   Store _transient;
-
-  /// @brief Last compacted store
-  Store _compacted;
 
   /// @brief Condition variable for appendEntries
   arangodb::basics::ConditionVariable _appendCV;
