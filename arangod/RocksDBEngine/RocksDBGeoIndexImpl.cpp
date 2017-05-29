@@ -99,14 +99,14 @@ typedef struct {
 /* only used for a leaf pot.                           */
 /* =================================================== */
 typedef struct {
-  int LorLeaf;
-  int RorPoints;
+  int16_t LorLeaf;
+  int16_t RorPoints;
   GeoString middle;
   GeoFix maxdist[GeoIndexFIXEDPOINTS];
   GeoString start;
   GeoString end;
-  int level;
-  int points[GeoIndexPOTSIZE];
+  int16_t level;
+  int32_t points[GeoIndexPOTSIZE];
 } GeoPot;
 /* =================================================== */
 /*                 GeoIx structure                     */
@@ -266,8 +266,90 @@ typedef struct {
 #include <StorageEngine/EngineSelectorFeature.h>
 
 namespace arangodb { namespace rocksdbengine {
-  
-  
+
+GeoCoordinate& formPersistent(char const* in, GeoCoordinate& out){
+  const char* start = in;
+
+  //convert latituide and longitute to uint64 for network transfer / storage
+  out.latitude = rocksutils::fromPersistent<decltype(out.latitude)>(start);
+  start += sizeof(out.latitude);
+  out.longitude = rocksutils::fromPersistent<decltype(out.longitude)>(start);
+  start += sizeof(out.longitude);
+  out.data = rocksutils::fromPersistent<decltype(out.data)>(start);
+  start += sizeof(out.data);
+
+  return out;
+}
+
+void toPersistent(GeoCoordinate& in, char* out){
+  char* start = out;
+
+  rocksutils::toPersistent(in.latitude, start);
+  start += sizeof(in.latitude);
+  rocksutils::toPersistent(in.longitude, start);
+  start += sizeof(in.longitude);
+  rocksutils::toPersistent(in.data, start);
+  start += sizeof(in.data);
+}
+
+GeoPot& formPersistent(char const* in, GeoPot& out){
+  const char* start = in;
+
+  out.LorLeaf = rocksutils::fromPersistent<decltype(out.LorLeaf)>(start);
+  start += sizeof(out.LorLeaf);
+  out.RorPoints = rocksutils::fromPersistent<decltype(out.RorPoints)>(start);
+  start += sizeof(out.RorPoints);
+  out.middle = rocksutils::fromPersistent<decltype(out.middle)>(start);
+  start += sizeof(out.middle);
+
+  for(std::size_t i = 0; i< GeoIndexFIXEDPOINTS; i++){
+    out.maxdist[i] = rocksutils::fromPersistent<decltype(out.maxdist[0])>(start);
+    start += sizeof(out.maxdist[0]);
+  }
+
+  out.start = rocksutils::fromPersistent<decltype(out.start)>(start);
+  start += sizeof(out.start);
+  out.end = rocksutils::fromPersistent<decltype(out.end)>(start);
+  start += sizeof(out.end);
+  out.level = rocksutils::fromPersistent<decltype(out.level)>(start);
+  start += sizeof(out.level);
+
+  for(std::size_t i = 0; i< GeoIndexFIXEDPOINTS; i++){
+    out.points[i] = rocksutils::fromPersistent<decltype(out.points[0])>(start);
+    start += sizeof(out.points[0]);
+  }
+
+  return out;
+}
+
+void toPersistent(GeoPot& in, char* out){
+  char* start = out;
+
+  rocksutils::toPersistent(in.LorLeaf, start);
+  start += sizeof(in.LorLeaf);
+  rocksutils::toPersistent(in.RorPoints, start);
+  start += sizeof(in.RorPoints);
+  rocksutils::toPersistent(in.middle, start);
+  start += sizeof(in.middle);
+
+  for(std::size_t i = 0; i< GeoIndexFIXEDPOINTS; i++){
+    rocksutils::toPersistent(in.maxdist[0], start);
+    start += sizeof(in.maxdist[0]);
+  }
+
+  rocksutils::toPersistent(in.start, start);
+  start += sizeof(in.start);
+  rocksutils::toPersistent(in.end, start);
+  start += sizeof(in.end);
+  rocksutils::toPersistent(in.level, start);
+  start += sizeof(in.level);
+
+  for(std::size_t i = 0; i< GeoIndexFIXEDPOINTS; i++){
+    rocksutils::toPersistent(in.points[0], start);
+    start += sizeof(in.points[0]);
+  }
+}
+
 /* CRUD interface */
 
 void GeoIndex_setRocksMethods(GeoIdx* gi, RocksDBMethods* trx) {
@@ -322,13 +404,16 @@ void SlotRead(GeoIx * gix, int slot, GeoCoordinate * gc /*out param*/)
   RocksDBKey key = RocksDBKey::GeoIndexValue(gix->objectId, slot, true);
   std::string slotValue;
   RocksRead(gix, key, &slotValue);
-  memcpy(gc, slotValue.data(), slotValue.size());
+  formPersistent(slotValue.data(),*gc);
+  //memcpy(gc, slotValue.data(), slotValue.size());
 }
 void SlotWrite(GeoIx * gix,int slot, GeoCoordinate * gc)
 {
   RocksDBKey key = RocksDBKey::GeoIndexValue(gix->objectId, slot, true);
-  RocksWrite(gix, key, rocksdb::Slice((char*)gc,
-                                      sizeof(GeoCoordinate)));
+  char data[sizeof (GeoCoordinate)];
+  toPersistent(*gc, &data[0]);
+  RocksWrite(gix, key, rocksdb::Slice(&data[0], sizeof(GeoCoordinate)));
+  // RocksWrite(gix, key, rocksdb::Slice((char*)gc, sizeof(GeoCoordinate)));
 }
 
 void PotRead(GeoIx * gix, int pot, GeoPot * gp)
@@ -336,12 +421,16 @@ void PotRead(GeoIx * gix, int pot, GeoPot * gp)
   RocksDBKey key = RocksDBKey::GeoIndexValue(gix->objectId, pot, false);
   std::string potValue;
   RocksRead(gix, key, &potValue);
+  formPersistent(potValue.data(), *gp);
   memcpy(gp, potValue.data(), potValue.size());
 }
   
 void PotWrite(GeoIx * gix, int pot, GeoPot * gp) {
   RocksDBKey key = RocksDBKey::GeoIndexValue(gix->objectId, pot, false);
-  RocksWrite(gix, key, rocksdb::Slice((char*)gp, sizeof(GeoPot)));
+  char data[sizeof (GeoPot)];
+  toPersistent(*gp, &data[0]);
+  RocksWrite(gix, key, rocksdb::Slice(&data[0], sizeof(GeoPot)));
+  //RocksWrite(gix, key, rocksdb::Slice((char*)gp, sizeof(GeoPot)));
 }
 
 /* =================================================== */

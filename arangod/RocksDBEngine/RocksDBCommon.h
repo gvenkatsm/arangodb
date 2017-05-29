@@ -78,6 +78,33 @@ class Methods;
 }
 namespace rocksutils {
 
+template <typename T>
+void toPersistent(T in, char* out){
+  std::memcpy(out, &in, sizeof(in));
+}
+
+// val returned by .data may not be const
+template <typename T, typename StringLike>
+void toPersistent(T in, StringLike& out){
+  std::memcpy(out.data(), &in, sizeof(in));
+}
+
+
+
+template <typename T>
+typename std::decay<T>::type fromPersistent(char const* in){
+  typename std::decay<T>::type out;
+  std::memcpy(&out, in, sizeof(out));
+  return out;
+}
+
+template <typename T, typename StringLike>
+typename std::decay<T>::type fromPersistent(StringLike& in){
+  typename std::decay<T>::type out;
+  std::memcpy(&out, in.data(), sizeof(out));
+  return out;
+}
+
 uint64_t uint64FromPersistent(char const* p);
 void uint64ToPersistent(char* p, uint64_t value);
 void uint64ToPersistent(std::string& out, uint64_t value);
