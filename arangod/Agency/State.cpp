@@ -796,9 +796,13 @@ bool State::compact(arangodb::consensus::index_t cind) {
 
 /// Compact volatile state
 bool State::compactVolatile(arangodb::consensus::index_t cind) {
+  // Note that we intentionally keep the index cind although it is, strictly
+  // speaking, no longer necessary. This is to make sure that _log does not
+  // become empty!
   MUTEX_LOCKER(mutexLocker, _logLock);
   if (!_log.empty() && cind > _cur && cind - _cur < _log.size()) {
     _log.erase(_log.begin(), _log.begin() + (cind - _cur));
+    TRI_ASSERT(_log.begin()->index == cind);
     _cur = _log.begin()->index;
   }
   return true;
@@ -806,6 +810,9 @@ bool State::compactVolatile(arangodb::consensus::index_t cind) {
 
 /// Compact persisted state
 bool State::compactPersisted(arangodb::consensus::index_t cind) {
+  // Note that we intentionally keep the index cind although it is, strictly
+  // speaking, no longer necessary. This is to make sure that _log does not
+  // become empty!
   auto bindVars = std::make_shared<VPackBuilder>();
   bindVars->openObject();
   bindVars->close();
@@ -813,7 +820,7 @@ bool State::compactPersisted(arangodb::consensus::index_t cind) {
   std::stringstream i_str;
   i_str << std::setw(20) << std::setfill('0') << cind;
 
-  std::string const aql(std::string("FOR l IN log FILTER l._key <= \"") +
+  std::string const aql(std::string("FOR l IN log FILTER l._key < \"") +
                         i_str.str() + "\" REMOVE l IN log");
 
   arangodb::aql::Query query(false, _vocbase, aql::QueryString(aql), bindVars,
@@ -832,7 +839,7 @@ bool State::compactPersisted(arangodb::consensus::index_t cind) {
   return true;
 }
 
-/// Remove outdate compactions
+/// Remove outdated compaction snapshots
 bool State::removeObsolete(arangodb::consensus::index_t cind) {
   if (cind > 3 * _agent->config().compactionStepSize()) {
     auto bindVars = std::make_shared<VPackBuilder>();
