@@ -143,7 +143,8 @@ class State {
 
   /// @brief load a compacted snapshot, returns true if successfull and false
   /// otherwise. In case of success store and index are modified. The store
-  /// is reset to the state after log index `index` has been applied.
+  /// is reset to the state after log index `index` has been applied. Sets
+  /// `index` to 0 if there is no compacted snapshot.
   bool loadLastCompactedSnapshot(Store& store, index_t& index);
 
  private:

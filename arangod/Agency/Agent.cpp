@@ -1453,17 +1453,14 @@ query_t Agent::buildDB(arangodb::consensus::index_t index) {
     LOG_TOPIC(INFO, Logger::AGENCY)
       << "Cannot snapshot beyond leaderCommitIndex: " << _leaderCommitIndex;
     index = _leaderCommitIndex;
-  } else if (oldIndex != std::numeric_limits<index_t>::max() &&
-             index < oldIndex) {
+  } else if (index < oldIndex) {
     LOG_TOPIC(INFO, Logger::AGENCY)
       << "Cannot snapshot before last compaction index: " << oldIndex;
     index = oldIndex;
   }
   
   std::vector<VPackSlice> logs;
-  if (oldIndex == std::numeric_limits<index_t>::max()) {
-    logs = _state.slices(0, index);
-  } else if (index > oldIndex) {
+  if (index > oldIndex) {
     logs = _state.slices(oldIndex+1, index);
   }
   store.applyLogEntries(logs, index, term(),

@@ -526,7 +526,10 @@ bool State::loadPersisted() {
   return true;
 }
 
-/// Load compaction collection
+/// @brief load a compacted snapshot, returns true if successfull and false
+/// otherwise. In case of success store and index are modified. The store
+/// is reset to the state after log index `index` has been applied. Sets
+/// `index` to 0 if there is no compacted snapshot.
 bool State::loadLastCompactedSnapshot(Store& store, index_t& index) {
   auto bindVars = std::make_shared<VPackBuilder>();
   bindVars->openObject();
@@ -559,7 +562,7 @@ bool State::loadLastCompactedSnapshot(Store& store, index_t& index) {
       }
     } else if (result.length() == 0) {
       // No compaction snapshot yet
-      index = std::numeric_limits<index_t>::max();
+      index = 0;
       return true;
     }
   }
@@ -761,16 +764,14 @@ bool State::compact(arangodb::consensus::index_t cind) {
   if (!loadLastCompactedSnapshot(snapshot, index)) {
     return false;
   }
-  if (index != std::numeric_limits<index_t>::max() && index > cind) {
+  if (index > cind) {
     LOG_TOPIC(ERR, Logger::AGENCY)
       << "Strange, last compaction snapshot " << index << " is younger than "
       << "currently attempted snapshot " << cind;
     return false;
-  }
-  if (index == std::numeric_limits<index_t>::max() || index < cind) {
+  } else if (index < cind) {
     // Now apply log entries to snapshot up to and including index cind:
-    auto logs = slices(index == std::numeric_limits<index_t>::max() ?
-                                0 : index + 1, cind);
+    auto logs = slices(index + 1, cind);
     snapshot.applyLogEntries(logs, cind, _agent->term(),
         false  /* do not perform callbacks */);
     if (!persistCompactionSnapshot(cind, snapshot)) {
