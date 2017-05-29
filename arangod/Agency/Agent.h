@@ -282,20 +282,18 @@ class Agent : public arangodb::Thread,
   /// @brief Configuration of command line options
   config_t _config;
 
-  /// @brief Last index that is "committed" in the sense that the leader
+  /// @brief
+  /// Leader: Last index that is "committed" in the sense that the leader
   /// has convinced itself that an absolute majority (including the leader)
   /// have written the entry into their log, this variable is only maintained
   /// on the leader.
-  index_t _lastCommitIndex;
-
-  /// @brief Last index of the log that has been applied to the readDB, this
-  /// variable is only maintained on the leader, since the follower to not
-  /// maintain a readDB
-  index_t _lastAppliedIndex;
-
-  /// @brief this is only kept on followers and indicates what the leader
+  /// Follower: this is only kept on followers and indicates what the leader
   /// told them it has last "committed" in the above sense.
-  index_t _leaderCommitIndex;
+  index_t _commitIndex;
+
+  /// @brief Index of highest log entry applied to state achine (initialized
+  /// to 0, increases monotonically)
+  index_t _lastApplied;
 
   /// @brief Spearhead (write) kv-store
   Store _spearhead;

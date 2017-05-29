@@ -46,9 +46,8 @@ namespace consensus {
 Agent::Agent(config_t const& config)
   : Thread("Agent"),
     _config(config),
-    _lastCommitIndex(0),
-    _lastAppliedIndex(0),
-    _leaderCommitIndex(0),
+    _commitIndex(0),
+    _lastApplied(0),
     _spearhead(this),
     _readDB(this),
     _transient(this),
@@ -178,7 +177,7 @@ AgentInterface::raft_commit_t Agent::waitFor(index_t index, double timeout) {
     /// success?
     {
       MUTEX_LOCKER(lockIndex, _ioLock);
-      if (_lastCommitIndex >= index) {
+      if (_commitIndex >= index) {
         return Agent::raft_commit_t::OK;
       }
     }
@@ -187,7 +186,7 @@ AgentInterface::raft_commit_t Agent::waitFor(index_t index, double timeout) {
     if (!_waitForCV.wait(static_cast<uint64_t>(1.0e6 * timeout))) {
       if (leading()) {
         MUTEX_LOCKER(lockIndex, _ioLock);
-        return (_lastCommitIndex >= index) ?
+        return (_commitIndex >= index) ?
           Agent::raft_commit_t::OK : Agent::raft_commit_t::TIMEOUT;
       } else {
         return Agent::raft_commit_t::UNKNOWN;
@@ -224,7 +223,7 @@ void Agent::reportIn(std::string const& peerId, index_t index, size_t toLog) {
       }
     }
 
-    if (index > _lastCommitIndex) {  // progress last commit?
+    if (index > _commitIndex) {  // progress last commit?
 
       size_t n = 0;
 
@@ -236,20 +235,17 @@ void Agent::reportIn(std::string const& peerId, index_t index, size_t toLog) {
       if (n > size() / 2) {
 
         LOG_TOPIC(TRACE, Logger::AGENCY)
-          << "Critical mass for commiting " << _lastCommitIndex + 1
+          << "Critical mass for commiting " << _commitIndex + 1
           << " through " << index << " to read db";
 
         _readDB.applyLogEntries(
           _state.slices(
-            _lastCommitIndex + 1, index), _lastCommitIndex, _constituent.term(),
+            _commitIndex + 1, index), _commitIndex, _constituent.term(),
             true /* inform others by callbacks */ );
         
-        _lastCommitIndex   = index;
-        _lastAppliedIndex  = index;
-
         MUTEX_LOCKER(liLocker, _liLock);
-        _leaderCommitIndex = index;
-        if (_leaderCommitIndex >= _nextCompactionAfter) {
+        _commitIndex = index;
+        if (_commitIndex >= _nextCompactionAfter) {
           _compactor.wakeUp();
         }
 
@@ -286,11 +282,6 @@ bool Agent::recvAppendEntriesRPC(
     return false;
   }
 
-  {
-    MUTEX_LOCKER(ioLocker, _liLock);
-    _leaderCommitIndex = leaderCommitIndex;
-  }
-  
   size_t nqs = queries->slice().length();
 
   // State machine, _lastCommitIndex to advance atomically
@@ -307,7 +298,8 @@ bool Agent::recvAppendEntriesRPC(
       
       try {
         
-        _state.log(queries, ndups);
+        MUTEX_LOCKER(ioLocker, _liLock);
+        _lastApplied = _state.log(queries, ndups);
         
       } catch (std::exception const&) {
         LOG_TOPIC(DEBUG, Logger::AGENCY)
@@ -317,7 +309,12 @@ bool Agent::recvAppendEntriesRPC(
     }
   }
 
-  if (_leaderCommitIndex >= _nextCompactionAfter) {
+  {
+    MUTEX_LOCKER(ioLocker, _ioLock);
+    _commitIndex = std::min(leaderCommitIndex, _lastApplied);
+  }
+  
+  if (_commitIndex >= _nextCompactionAfter) {
     _compactor.wakeUp();
   }
 
@@ -344,15 +341,15 @@ void Agent::sendAppendEntriesRPC() {
 
       term_t t(0);
 
-      index_t last_confirmed, lastCommitIndex;
+      index_t lastConfirmed, commitIndex;
       {
         MUTEX_LOCKER(ioLocker, _ioLock);
         t = this->term();
-        last_confirmed = _confirmed[followerId];
-        lastCommitIndex = _lastCommitIndex;
+        lastConfirmed = _confirmed[followerId];
+        commitIndex = _commitIndex;
       }
 
-      std::vector<log_t> unconfirmed = _state.get(last_confirmed);
+      std::vector<log_t> unconfirmed = _state.get(lastConfirmed);
 
       index_t highest = unconfirmed.back().index;
 
@@ -369,8 +366,8 @@ void Agent::sendAppendEntriesRPC() {
       path << "/_api/agency_priv/appendEntries?term=" << t << "&leaderId="
            << id() << "&prevLogIndex=" << unconfirmed.front().index
            << "&prevLogTerm=" << unconfirmed.front().term << "&leaderCommit="
-           << lastCommitIndex;
-
+           << commitIndex;
+      
       size_t toLog = 0;
       // Body
       Builder builder;
@@ -460,7 +457,7 @@ query_t Agent::activate(query_t const& everything) {
       ret->add("success", VPackValue(false));
     } else {
 
-      index_t lastCommitIndex = 0;
+      index_t commitIndex = 0;
       Slice compact = slice.get("compact");
       Slice    logs = slice.get("logs");
 
@@ -475,8 +472,8 @@ query_t Agent::activate(query_t const& everything) {
         if (!compact.isEmptyArray()) {
           _readDB = compact.get("readDB");
         }
-        lastCommitIndex = _lastCommitIndex;
-        _readDB.applyLogEntries(batch, lastCommitIndex, _constituent.term(),
+        commitIndex = _commitIndex;
+        _readDB.applyLogEntries(batch, commitIndex, _constituent.term(),
                                 false  /* do not perform callbacks */);
         _spearhead = _readDB;
       }
@@ -485,7 +482,7 @@ query_t Agent::activate(query_t const& everything) {
       //_state.log((everything->slice().get("logs"));
 
       ret->add("success", VPackValue(true));
-      ret->add("commitId", VPackValue(lastCommitIndex));
+      ret->add("commitId", VPackValue(commitIndex));
     }
 
   } else {
@@ -550,7 +547,7 @@ bool Agent::load() {
 
   LOG_TOPIC(DEBUG, Logger::AGENCY) << "Reassembling spearhead and read stores.";
   _spearhead.applyLogEntries(
-    _state.slices(_lastCommitIndex + 1), _lastCommitIndex, _constituent.term(),
+    _state.slices(_commitIndex + 1), _commitIndex, _constituent.term(),
     false  /* do not send callbacks */);
   
   {
@@ -815,6 +812,9 @@ write_ret_t Agent::write(query_t const& query) {
   index_t maxind = 0;
   if (!indices.empty()) {
     maxind = *std::max_element(indices.begin(), indices.end());
+  // update my last applied
+    MUTEX_LOCKER(liLocker, _liLock);
+    _lastApplied = maxind;
   }
 
   // Report that leader has persisted
@@ -1195,7 +1195,6 @@ void Agent::notify(query_t const& message) {
 arangodb::consensus::index_t Agent::rebuildDBs() {
 
   MUTEX_LOCKER(ioLocker, _ioLock);
-  MUTEX_LOCKER(liLocker, _liLock);
 
   index_t lastCompactionIndex;
   if (!_state.loadLastCompactedSnapshot(_readDB, lastCompactionIndex)) {
@@ -1205,21 +1204,22 @@ arangodb::consensus::index_t Agent::rebuildDBs() {
   // Apply logs from last applied index to leader's commit index
   LOG_TOPIC(DEBUG, Logger::AGENCY)
     << "Rebuilding key-value stores from index "
-    << lastCompactionIndex << " to " << _leaderCommitIndex << " " << _state;
+    << lastCompactionIndex << " to " << _commitIndex << " " << _state;
 
-  auto logs = _state.slices(lastCompactionIndex+1, _leaderCommitIndex);
-  _readDB.applyLogEntries(logs, _leaderCommitIndex, _constituent.term(),
+  auto logs = _state.slices(lastCompactionIndex+1, _commitIndex);
+  _readDB.applyLogEntries(logs, _commitIndex, _constituent.term(),
       false  /* do not send callbacks */);
   _spearhead = _readDB;
 
   LOG_TOPIC(TRACE, Logger::AGENCY) << "ReadDB: " << _readDB;
     
-  _lastAppliedIndex = _leaderCommitIndex;
+  MUTEX_LOCKER(liLocker, _liLock);
+  _lastApplied = _commitIndex;
   
   LOG_TOPIC(INFO, Logger::AGENCY)
     << id() << " rebuilt key-value stores - serving.";
 
-  return _lastAppliedIndex;
+  return _lastApplied;
 
 }
 
@@ -1231,12 +1231,12 @@ void Agent::compact() {
   // we cannot use the _readDB ever, since we have to compute a state of the
   // key/value space well before _lastAppliedIndex anyway:
   _nextCompactionAfter += _config.compactionStepSize();
-  index_t current = leading() ? _lastCommitIndex : _leaderCommitIndex;
-  if (current > _config.compactionKeepSize()) {
+
+  if (_commitIndex > _config.compactionKeepSize()) {
     // If the keep size is too large, we do not yet compact
-    if (!_state.compact(current - _config.compactionKeepSize())) {
+    if (!_state.compact(_commitIndex - _config.compactionKeepSize())) {
       LOG_TOPIC(WARN, Logger::AGENCY) << "Compaction for index "
-        << current - _config.compactionKeepSize()
+        << _commitIndex - _config.compactionKeepSize()
         << " did not work.";
     }
   }
@@ -1245,18 +1245,19 @@ void Agent::compact() {
 
 /// Last commit index
 std::pair<arangodb::consensus::index_t, arangodb::consensus::index_t>
-  Agent::lastCommitted() const {
+Agent::lastCommitted() const {
   MUTEX_LOCKER(ioLocker, _ioLock);
+  MUTEX_LOCKER(liLocker, _liLock);
   return std::pair<arangodb::consensus::index_t, arangodb::consensus::index_t>(
-    _lastCommitIndex,_leaderCommitIndex);
+    _lastApplied, _commitIndex);
 }
 
 /// Last commit index
 void Agent::lastCommitted(arangodb::consensus::index_t lastCommitIndex) {
   MUTEX_LOCKER(ioLocker, _ioLock);
-  _lastCommitIndex = lastCommitIndex;
+  _commitIndex = lastCommitIndex;
   MUTEX_LOCKER(liLocker, _liLock);
-  _leaderCommitIndex = lastCommitIndex;
+  _lastApplied = lastCommitIndex;
 }
 
 /// Last log entry
@@ -1272,7 +1273,7 @@ Store const& Agent::readDB() const { return _readDB; }
 arangodb::consensus::index_t Agent::readDB(Node& node) const {
   MUTEX_LOCKER(ioLocker, _ioLock);
   node = _readDB.get();
-  return _lastCommitIndex;
+  return _commitIndex;
 }
 
 /// Get transient
@@ -1287,15 +1288,15 @@ Agent& Agent::operator=(VPackSlice const& compaction) {
 
   // Catch up with commit
   try {
-    _lastCommitIndex = std::stoul(compaction.get("_key").copyString());
+    _commitIndex = std::stoul(compaction.get("_key").copyString());
     MUTEX_LOCKER(liLocker, _liLock);
-    _leaderCommitIndex = _lastCommitIndex;
+    _lastApplied = _commitIndex;
   } catch (std::exception const& e) {
     LOG_TOPIC(ERR, Logger::AGENCY) << e.what() << " " << __FILE__ << __LINE__;
   }
 
   // Schedule next compaction
-  _nextCompactionAfter = _lastCommitIndex + _config.compactionStepSize();
+  _nextCompactionAfter = _commitIndex + _config.compactionStepSize();
 
   return *this;
 }
@@ -1450,10 +1451,10 @@ query_t Agent::buildDB(arangodb::consensus::index_t index) {
     THROW_ARANGO_EXCEPTION(TRI_ERROR_AGENCY_CANNOT_REBUILD_DBS);
   }
   
-  if (index > _leaderCommitIndex) {
+  if (index > _commitIndex) {
     LOG_TOPIC(INFO, Logger::AGENCY)
-      << "Cannot snapshot beyond leaderCommitIndex: " << _leaderCommitIndex;
-    index = _leaderCommitIndex;
+      << "Cannot snapshot beyond leaderCommitIndex: " << _commitIndex;
+    index = _commitIndex;
   } else if (index < oldIndex) {
     LOG_TOPIC(INFO, Logger::AGENCY)
       << "Cannot snapshot before last compaction index: " << oldIndex;
