@@ -145,7 +145,7 @@ class State {
   /// otherwise. In case of success store and index are modified. The store
   /// is reset to the state after log index `index` has been applied. Sets
   /// `index` to 0 if there is no compacted snapshot.
-  bool loadLastCompactedSnapshot(Store& store, index_t& index);
+  bool loadLastCompactedSnapshot(Store& store, index_t& index, term_t& term);
 
  private:
   /// @brief Save currentTerm, votedFor, log entries
@@ -186,6 +186,7 @@ class State {
 
   /// @brief Persist a compaction snapshot
   bool persistCompactionSnapshot(arangodb::consensus::index_t cind,
+                                 arangodb::consensus::term_t term,
                                  arangodb::consensus::Store& snapshot);
 
   /// @brief Our agent

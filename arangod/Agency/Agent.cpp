@@ -1197,7 +1197,8 @@ arangodb::consensus::index_t Agent::rebuildDBs() {
   MUTEX_LOCKER(ioLocker, _ioLock);
 
   index_t lastCompactionIndex;
-  if (!_state.loadLastCompactedSnapshot(_readDB, lastCompactionIndex)) {
+  term_t term;
+  if (!_state.loadLastCompactedSnapshot(_readDB, lastCompactionIndex, term)) {
     THROW_ARANGO_EXCEPTION(TRI_ERROR_AGENCY_CANNOT_REBUILD_DBS);
   }
 
@@ -1447,7 +1448,8 @@ query_t Agent::buildDB(arangodb::consensus::index_t index) {
 
   Store store(this);
   index_t oldIndex;
-  if (!_state.loadLastCompactedSnapshot(store, oldIndex)) {
+  term_t term;
+  if (!_state.loadLastCompactedSnapshot(store, oldIndex, term)) {
     THROW_ARANGO_EXCEPTION(TRI_ERROR_AGENCY_CANNOT_REBUILD_DBS);
   }
   
@@ -1465,7 +1467,7 @@ query_t Agent::buildDB(arangodb::consensus::index_t index) {
   if (index > oldIndex) {
     logs = _state.slices(oldIndex+1, index);
   }
-  store.applyLogEntries(logs, index, term(),
+  store.applyLogEntries(logs, index, term,
                         false  /* do not perform callbacks */);
 
   auto builder = std::make_shared<VPackBuilder>();

@@ -530,7 +530,8 @@ bool State::loadPersisted() {
 /// otherwise. In case of success store and index are modified. The store
 /// is reset to the state after log index `index` has been applied. Sets
 /// `index` to 0 if there is no compacted snapshot.
-bool State::loadLastCompactedSnapshot(Store& store, index_t& index) {
+bool State::loadLastCompactedSnapshot(Store& store, index_t& index,
+                                      term_t& term) {
   auto bindVars = std::make_shared<VPackBuilder>();
   bindVars->openObject();
   bindVars->close();
@@ -555,6 +556,7 @@ bool State::loadLastCompactedSnapshot(Store& store, index_t& index) {
       try {
         store = ii.get("readDB");
         index = std::stoul(ii.get("_key").copyString());
+        term = static_cast<term_t>(ii.get("term").getDouble());
         return true;
       } catch (std::exception const& e) {
         LOG_TOPIC(ERR, Logger::AGENCY) << e.what() << " " << __FILE__
@@ -563,6 +565,7 @@ bool State::loadLastCompactedSnapshot(Store& store, index_t& index) {
     } else if (result.length() == 0) {
       // No compaction snapshot yet
       index = 0;
+      term = 0;
       return true;
     }
   }
@@ -761,7 +764,8 @@ bool State::compact(arangodb::consensus::index_t cind) {
   // latest compaction state and advance from there:
   Store snapshot(_agent, "snapshot");
   index_t index;
-  if (!loadLastCompactedSnapshot(snapshot, index)) {
+  term_t term;
+  if (!loadLastCompactedSnapshot(snapshot, index, term)) {
     return false;
   }
   if (index > cind) {
@@ -769,12 +773,15 @@ bool State::compact(arangodb::consensus::index_t cind) {
       << "Strange, last compaction snapshot " << index << " is younger than "
       << "currently attempted snapshot " << cind;
     return false;
-  } else if (index < cind) {
-    // Now apply log entries to snapshot up to and including index cind:
+  } else if (index == cind) {
+    return true;  // already have snapshot for this index
+  } else {  // now we know index < cind
+    // Apply log entries to snapshot up to and including index cind:
     auto logs = slices(index + 1, cind);
-    snapshot.applyLogEntries(logs, cind, _agent->term(),
+    log_t last = at(cind);
+    snapshot.applyLogEntries(logs, cind, last.term,
         false  /* do not perform callbacks */);
-    if (!persistCompactionSnapshot(cind, snapshot)) {
+    if (!persistCompactionSnapshot(cind, last.term, snapshot)) {
       LOG_TOPIC(ERR, Logger::AGENCY)
         << "Could not persist compaction snapshot.";
       return false;
@@ -901,6 +908,7 @@ bool State::persistReadDB(arangodb::consensus::index_t cind) {
 
 /// Persist a compaction snapshot
 bool State::persistCompactionSnapshot(arangodb::consensus::index_t cind,
+                                      arangodb::consensus::term_t term,
                                       arangodb::consensus::Store& snapshot) {
   if (checkCollection("compact")) {
     std::stringstream i_str;
@@ -911,6 +919,7 @@ bool State::persistCompactionSnapshot(arangodb::consensus::index_t cind,
       store.add(VPackValue("readDB"));
       { VPackArrayBuilder a(&store);
         snapshot.dumpToBuilder(store); }
+      store.add("term", VPackValue(static_cast<double>(term)));
       store.add("_key", VPackValue(i_str.str())); }
 
     TRI_ASSERT(_vocbase != nullptr);
