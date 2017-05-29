@@ -1479,7 +1479,7 @@ void Agent::addTrxsOngoing(Slice trxs) {
   try {
     MUTEX_LOCKER(guard,_trxsLock);
     for (auto const& trx : VPackArrayIterator(trxs)) {
-      if (trx[0].isObject() && trx.length() == 3 && trx[2].isString()) {
+      if (trx.isArray() && trx.length() == 3 && trx[0].isObject() && trx[2].isString()) {
         // only those are interesting:
         _ongoingTrxs.insert(trx[2].copyString());
       }
@@ -1492,7 +1492,7 @@ void Agent::removeTrxsOngoing(Slice trxs) {
   try {
     MUTEX_LOCKER(guard, _trxsLock);
     for (auto const& trx : VPackArrayIterator(trxs)) {
-      if (trx[0].isObject() && trx.length() == 3 && trx[2].isString()) {
+      if (trx.isArray() && trx.length() == 3 && trx[0].isObject() && trx[2].isString()) {
         // only those are interesting:
         _ongoingTrxs.erase(trx[2].copyString());
       }
