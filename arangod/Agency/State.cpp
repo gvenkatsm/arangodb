@@ -737,7 +737,6 @@ bool State::loadRemaining() {
   }
   
   _agent->lastCommitted(back);
-  _agent->rebuildDBs();
 
   return true;
 }
@@ -772,9 +771,8 @@ bool State::compact(arangodb::consensus::index_t cind) {
     // Now apply log entries to snapshot up to and including index cind:
     auto logs = slices(index == std::numeric_limits<index_t>::max() ?
                                 0 : index + 1, cind);
-    for (VPackSlice slice : logs) {
-      snapshot.applies(slice);
-    }
+    snapshot.applyLogEntries(logs, cind, _agent->term(),
+        false  /* do not perform callbacks */);
     if (!persistCompactionSnapshot(cind, snapshot)) {
       LOG_TOPIC(ERR, Logger::AGENCY)
         << "Could not persist compaction snapshot.";

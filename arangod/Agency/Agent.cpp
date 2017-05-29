@@ -239,9 +239,10 @@ void Agent::reportIn(std::string const& peerId, index_t index, size_t toLog) {
           << "Critical mass for commiting " << _lastCommitIndex + 1
           << " through " << index << " to read db";
 
-        _readDB.apply(
+        _readDB.applyLogEntries(
           _state.slices(
-            _lastCommitIndex + 1, index), _lastCommitIndex, _constituent.term());
+            _lastCommitIndex + 1, index), _lastCommitIndex, _constituent.term(),
+            true /* inform others by callbacks */ );
         
         _lastCommitIndex   = index;
         _lastAppliedIndex  = index;
@@ -475,7 +476,8 @@ query_t Agent::activate(query_t const& everything) {
           _readDB = compact.get("readDB");
         }
         lastCommitIndex = _lastCommitIndex;
-        _readDB.apply(batch, lastCommitIndex, _constituent.term());
+        _readDB.applyLogEntries(batch, lastCommitIndex, _constituent.term(),
+                                false  /* do not perform callbacks */);
         _spearhead = _readDB;
       }
 
@@ -547,8 +549,9 @@ bool Agent::load() {
   } 
 
   LOG_TOPIC(DEBUG, Logger::AGENCY) << "Reassembling spearhead and read stores.";
-  _spearhead.apply(
-    _state.slices(_lastCommitIndex + 1), _lastCommitIndex, _constituent.term());
+  _spearhead.applyLogEntries(
+    _state.slices(_lastCommitIndex + 1), _lastCommitIndex, _constituent.term(),
+    false  /* do not send callbacks */);
   
   {
     CONDITION_LOCKER(guard, _appendCV);
@@ -654,7 +657,7 @@ trans_ret_t Agent::transact(query_t const& queries) {
     
     for (const auto& query : VPackArrayIterator(qs)) {
       if (query[0].isObject()) {
-        check_ret_t res = _spearhead.apply(query); 
+        check_ret_t res = _spearhead.applyTransaction(query); 
         if(res.successful()) {
           maxind = (query.length() == 3 && query[2].isString()) ?
             _state.log(query[0], term(), query[2].copyString()) :
@@ -718,7 +721,7 @@ trans_ret_t Agent::transient(query_t const& queries) {
     // Read and writes
     for (const auto& query : VPackArrayIterator(queries->slice())) {
       if (query[0].isObject()) {
-        ret->add(VPackValue(_transient.apply(query).successful()));
+        ret->add(VPackValue(_transient.applyTransaction(query).successful()));
       } else if (query[0].isString()) {
         _transient.read(query, *ret);
       }
@@ -802,7 +805,7 @@ write_ret_t Agent::write(query_t const& query) {
       return write_ret_t(false, NO_LEADER);
     }
     
-    applied = _spearhead.apply(query);
+    applied = _spearhead.applyTransactions(query);
     indices = _state.log(query, applied, term());
   }
 
@@ -1205,9 +1208,8 @@ arangodb::consensus::index_t Agent::rebuildDBs() {
     << lastCompactionIndex << " to " << _leaderCommitIndex << " " << _state;
 
   auto logs = _state.slices(lastCompactionIndex+1, _leaderCommitIndex);
-  // Note that the following operation triggers callbacks if we are
-  // leading!
-  _readDB.apply(logs, _leaderCommitIndex, _constituent.term());
+  _readDB.applyLogEntries(logs, _leaderCommitIndex, _constituent.term(),
+      false  /* do not send callbacks */);
   _spearhead = _readDB;
 
   LOG_TOPIC(TRACE, Logger::AGENCY) << "ReadDB: " << _readDB;
@@ -1464,9 +1466,8 @@ query_t Agent::buildDB(arangodb::consensus::index_t index) {
   } else if (index > oldIndex) {
     logs = _state.slices(oldIndex+1, index);
   }
-  for (VPackSlice s : logs) {
-    store.applies(s);
-  }
+  store.applyLogEntries(logs, index, term(),
+                        false  /* do not perform callbacks */);
 
   auto builder = std::make_shared<VPackBuilder>();
   store.toBuilder(*builder);
