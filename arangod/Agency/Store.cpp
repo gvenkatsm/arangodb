@@ -270,7 +270,7 @@ struct notify_t {
 
 /// Apply (from logs)
 std::vector<bool> Store::applyLogEntries(
-  std::vector<VPackSlice> const& queries, index_t lastCommitIndex,
+  std::vector<VPackSlice> const& queries, index_t index,
   term_t term, bool inform) {
   std::vector<bool> applied;
 
@@ -329,7 +329,7 @@ std::vector<bool> Store::applyLogEntries(
       Builder body;  // host
       { VPackObjectBuilder b(&body);
         body.add("term", VPackValue(term));
-        body.add("index", VPackValue(lastCommitIndex));
+        body.add("index", VPackValue(index));
         auto ret = in.equal_range(url);
         std::string currentKey;
         for (auto it = ret.first; it != ret.second; ++it) {

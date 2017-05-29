@@ -604,6 +604,10 @@ bool State::loadCompacted() {
     }
   }
 
+  // We can be sure that every compacted snapshot only contains index entries
+  // that have been written and agreed upon by an absolute majority of agents.
+  _agent->lastCommitted(lastLog().index);
+
   return true;
 }
 
@@ -703,7 +707,6 @@ bool State::loadRemaining() {
   }
       
   auto result = queryResult.result->slice();
-  index_t back = 0;
 
   {
     MUTEX_LOCKER(logLock, _logLock);
@@ -736,11 +739,8 @@ bool State::loadRemaining() {
       }
     }
     TRI_ASSERT(!_log.empty());
-    back = _log.back().index;
   }
   
-  _agent->lastCommitted(back);
-
   return true;
 }
 

@@ -102,8 +102,7 @@ class Store : public arangodb::Thread {
 
   /// @brief Apply log entries in query, also process callbacks
   std::vector<bool> applyLogEntries(std::vector<Slice> const& query,
-                          index_t lastCommitIndex, term_t term,
-                          bool inform);
+                          index_t index, term_t term, bool inform);
 
   /// @brief Read specified query from store
   std::vector<bool> read(query_t const& query, query_t& result) const;

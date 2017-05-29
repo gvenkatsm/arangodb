@@ -307,18 +307,18 @@ bool Agent::recvAppendEntriesRPC(
       
       try {
         
-        _lastCommitIndex = _state.log(queries, ndups);
+        _state.log(queries, ndups);
         
-        if (_lastCommitIndex >= _nextCompactionAfter) {
-          _compactor.wakeUp();
-        }
-
       } catch (std::exception const&) {
         LOG_TOPIC(DEBUG, Logger::AGENCY)
           << "Malformed query: " << __FILE__ << __LINE__;
       }
       
     }
+  }
+
+  if (_leaderCommitIndex >= _nextCompactionAfter) {
+    _compactor.wakeUp();
   }
 
   return true;
@@ -1231,11 +1231,12 @@ void Agent::compact() {
   // we cannot use the _readDB ever, since we have to compute a state of the
   // key/value space well before _lastAppliedIndex anyway:
   _nextCompactionAfter += _config.compactionStepSize();
-  if (_lastAppliedIndex > _config.compactionKeepSize()) {
+  index_t current = leading() ? _lastCommitIndex : _leaderCommitIndex;
+  if (current > _config.compactionKeepSize()) {
     // If the keep size is too large, we do not yet compact
-    if (!_state.compact(_lastAppliedIndex-_config.compactionKeepSize())) {
+    if (!_state.compact(current - _config.compactionKeepSize())) {
       LOG_TOPIC(WARN, Logger::AGENCY) << "Compaction for index "
-        << _lastAppliedIndex - _config.compactionKeepSize()
+        << current - _config.compactionKeepSize()
         << " did not work.";
     }
   }

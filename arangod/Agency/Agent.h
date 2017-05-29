@@ -121,7 +121,7 @@ class Agent : public arangodb::Thread,
   ///        also used as heartbeat ($5.2).
   bool recvAppendEntriesRPC(term_t term, std::string const& leaderId,
                             index_t prevIndex, term_t prevTerm,
-                            index_t lastCommitIndex, query_t const& queries);
+                            index_t leaderCommitIndex, query_t const& queries);
 
   /// @brief Invoked by leader to replicate log entries ($5.3);
   ///        also used as heartbeat ($5.2).
@@ -282,15 +282,19 @@ class Agent : public arangodb::Thread,
   /// @brief Configuration of command line options
   config_t _config;
 
-  /// @brief Last commit index (raft)
-  index_t _lastCommitIndex;
-
-  /// @brief Last index of the log that has been applied to the readDB
-  index_t _lastAppliedIndex;
-
   /// @brief Last index that is "committed" in the sense that the leader
   /// has convinced itself that an absolute majority (including the leader)
-  /// have written the entry into their log
+  /// have written the entry into their log, this variable is only maintained
+  /// on the leader.
+  index_t _lastCommitIndex;
+
+  /// @brief Last index of the log that has been applied to the readDB, this
+  /// variable is only maintained on the leader, since the follower to not
+  /// maintain a readDB
+  index_t _lastAppliedIndex;
+
+  /// @brief this is only kept on followers and indicates what the leader
+  /// told them it has last "committed" in the above sense.
   index_t _leaderCommitIndex;
 
   /// @brief Spearhead (write) kv-store
