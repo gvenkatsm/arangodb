@@ -456,9 +456,9 @@ log_t State::operator[](arangodb::consensus::index_t index) const {
 log_t State::lastLog() const {
   MUTEX_LOCKER(mutexLocker, _logLock);  // Cannot be read lock (Compaction)
   TRI_ASSERT(!_log.empty());
-  return _log.back();
+  return _log.back();  
 }
-
+  
 /// Configure with agent
 bool State::configure(Agent* agent) {
   _agent = agent;
@@ -644,7 +644,9 @@ bool State::loadCompacted() {
 
   // We can be sure that every compacted snapshot only contains index entries
   // that have been written and agreed upon by an absolute majority of agents.
-  _agent->lastCommitted(lastLog().index);
+  if (!_log.empty()) {
+    _agent->lastCommitted(lastLog().index);
+  }
 
   return true;
 }
