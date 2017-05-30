@@ -240,65 +240,76 @@ arangodb::consensus::index_t State::log(query_t const& transactions,
   return _log.back().index;
 }
 
-size_t State::removeConflicts(query_t const& transactions) { // Under MUTEX in Agent
+size_t State::removeConflicts(query_t const& transactions,
+                              bool gotSnapshot) { 
+  // Under MUTEX in Agent
+  // Note that this will ignore a possible snapshot in the first position!
+  // This looks through the transactions and skips over those that are
+  // already present (or even already compacted). As soon as we find one
+  // for which the new term is higher than the locally stored term, we erase
+  // the locally stored log from that position and return, such that we
+  // can append from this point on the new stuff.
   VPackSlice slices = transactions->slice();
   TRI_ASSERT(slices.isArray());
-  size_t ndups = 0;
+  size_t ndups = gotSnapshot ? 1 : 0;
 
-  if (slices.length() > 0) {
-    auto bindVars = std::make_shared<VPackBuilder>();
-    bindVars->openObject();
-    bindVars->close();
+  try {
+    MUTEX_LOCKER(logLock, _logLock);
 
-    try {
-      MUTEX_LOCKER(logLock, _logLock);
-      auto idx = slices[0].get("index").getUInt();
-      auto pos = idx - _cur;
+    index_t lastIndex = (!_log.empty()) ? _log.back().index : 0; 
 
-      if (pos < _log.size()) {
-        for (auto const& slice : VPackArrayIterator(slices)) {
-          auto trm = slice.get("term").getUInt();
-          idx = slice.get("index").getUInt();
-          pos = idx - _cur;
-
-          if (pos < _log.size()) {
-            if (idx == _log.at(pos).index && trm != _log.at(pos).term) {
-              LOG_TOPIC(DEBUG, Logger::AGENCY)
-                  << "Removing " << _log.size() - pos
-                  << " entries from log starting with " << idx
-                  << "==" << _log.at(pos).index << " and " << trm << "="
-                  << _log.at(pos).term;
-
-              // persisted logs
-              std::string const aql(std::string("FOR l IN log FILTER l._key >= '") + 
-                                    stringify(idx) + "' REMOVE l IN log");
-
-              arangodb::aql::Query query(
-                false, _vocbase, aql::QueryString(aql), bindVars, nullptr,
-                arangodb::aql::PART_MAIN);
-
-              auto queryResult = query.execute(_queryRegistry);
-
-              if (queryResult.code != TRI_ERROR_NO_ERROR) {
-                THROW_ARANGO_EXCEPTION_MESSAGE(queryResult.code,
-                                               queryResult.details);
-              }
-
-              // volatile logs
-              _log.erase(_log.begin() + pos, _log.end());
-              
-              break;
-
-            } else {
-              ++ndups;
-            }
-          }
-        }
+    while (ndups < slices.length()) {
+      VPackSlice slice = slices[ndups];
+      index_t idx = slice.get("index").getUInt();
+      if (idx > lastIndex) {
+        break;
       }
-    } catch (std::exception const& e) {
-      LOG_TOPIC(DEBUG, Logger::AGENCY) << e.what() << " " << __FILE__
-                                       << __LINE__;
+      term_t trm = slice.get("term").getUInt();
+      if (idx < _cur) { // already compacted, treat as equal
+        ++ndups;
+        continue;
+      }
+      size_t pos = idx - _cur;  // position in _log
+      TRI_ASSERT(pos < _log.size());
+      if (idx == _log.at(pos).index && trm != _log.at(pos).term) {
+        // Found an outdated entry, remove everything from here in our local
+        // log:
+        LOG_TOPIC(DEBUG, Logger::AGENCY)
+            << "Removing " << _log.size() - pos
+            << " entries from log starting with " << idx
+            << "==" << _log.at(pos).index << " and " << trm << "="
+            << _log.at(pos).term;
+
+        // persisted logs
+        std::string const aql(std::string("FOR l IN log FILTER l._key >= '") + 
+                              stringify(idx) + "' REMOVE l IN log");
+
+        auto bindVars = std::make_shared<VPackBuilder>();
+        bindVars->openObject();
+        bindVars->close();
+
+        arangodb::aql::Query query(
+          false, _vocbase, aql::QueryString(aql), bindVars, nullptr,
+          arangodb::aql::PART_MAIN);
+
+        auto queryResult = query.execute(_queryRegistry);
+
+        if (queryResult.code != TRI_ERROR_NO_ERROR) {
+          THROW_ARANGO_EXCEPTION_MESSAGE(queryResult.code,
+                                         queryResult.details);
+        }
+
+        // volatile logs
+        _log.erase(_log.begin() + pos, _log.end());
+            
+        break;
+      } else {
+        ++ndups;
+      }
     }
+  } catch (std::exception const& e) {
+    LOG_TOPIC(DEBUG, Logger::AGENCY) << e.what() << " " << __FILE__
+                                     << __LINE__;
   }
 
   return ndups;
@@ -360,10 +371,34 @@ log_t State::at(arangodb::consensus::index_t index) const {
 }
 
 
+/// Check for a log entry, returns 0, if the log does not contain an entry
+/// with index `index`, 1, if it does contain one with term `term` and
+/// -1, if it does contain one with another term than `term`:
+int State::checkLog(arangodb::consensus::index_t index, term_t term) const {
+
+  MUTEX_LOCKER(mutexLocker, _logLock); // Cannot be read lock (Compaction)
+
+  // Catch exceptions and avoid overflow:
+  if (index < _cur || index - _cur > _log.size()) {
+    return 0;
+  }
+
+  try {
+    return _log.at(index-_cur).term == term ? 1 : -1;
+  } catch (...) {}
+
+  return 0;
+}
+
 /// Have log with specified index and term
 bool State::has(arangodb::consensus::index_t index, term_t term) const {
 
   MUTEX_LOCKER(mutexLocker, _logLock); // Cannot be read lock (Compaction)
+
+  // Catch exceptions and avoid overflow:
+  if (index < _cur || index - _cur > _log.size()) {
+    return false;
+  }
 
   try {
     return _log.at(index-_cur).term == term;
@@ -804,7 +839,7 @@ bool State::compact(arangodb::consensus::index_t cind) {
 bool State::compactVolatile(arangodb::consensus::index_t cind) {
   // Note that we intentionally keep the index cind although it is, strictly
   // speaking, no longer necessary. This is to make sure that _log does not
-  // become empty!
+  // become empty! DO NOT CHANGE! This is used elsewhere in the code!
   MUTEX_LOCKER(mutexLocker, _logLock);
   if (!_log.empty() && cind > _cur && cind - _cur < _log.size()) {
     _log.erase(_log.begin(), _log.begin() + (cind - _cur));
@@ -818,7 +853,7 @@ bool State::compactVolatile(arangodb::consensus::index_t cind) {
 bool State::compactPersisted(arangodb::consensus::index_t cind) {
   // Note that we intentionally keep the index cind although it is, strictly
   // speaking, no longer necessary. This is to make sure that _log does not
-  // become empty!
+  // become empty! DO NOT CHANGE! This is used elsewhere in the code!
   auto bindVars = std::make_shared<VPackBuilder>();
   bindVars->openObject();
   bindVars->close();
@@ -942,6 +977,41 @@ bool State::persistCompactionSnapshot(arangodb::consensus::index_t cind,
 
   LOG_TOPIC(ERR, Logger::AGENCY) << "Failed to persist snapshot for compaction!";
   return false;
+}
+
+/// @brief restoreLogFromSnapshot, needed in the follower, this erases the
+/// complete log and persists the given snapshot. After this operation, the
+/// log is empty and something ought to be appended to it rather quickly.
+bool State::restoreLogFromSnapshot(Store& snapshot,
+                                   index_t index,
+                                   term_t term) {
+  MUTEX_LOCKER(locker, _logLock);
+  if (!persistCompactionSnapshot(index, term, snapshot)) {
+    LOG_TOPIC(ERR, Logger::AGENCY)
+      << "Could not persist received log snapshot.";
+    return false;
+  }
+  // Now we need to completely erase our log, both persisted and volatile:
+  LOG_TOPIC(DEBUG, Logger::AGENCY)
+      << "Removing complete log because of new snapshot.";
+
+  // persisted logs
+  std::string const aql(std::string("FOR l IN log REMOVE l IN log"));
+
+  arangodb::aql::Query query(
+    false, _vocbase, aql::QueryString(aql), nullptr, nullptr,
+    arangodb::aql::PART_MAIN);
+
+  auto queryResult = query.execute(_queryRegistry);
+
+  // We ignore the result, in the worst case we have some log entries
+  // too many.
+
+  // volatile logs
+  _log.clear();
+  _cur = index;
+  // This empty log should soon be rectified!
+  return true;
 }
 
 void State::persistActiveAgents(query_t const& active, query_t const& pool) {
