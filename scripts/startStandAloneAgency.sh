@@ -16,6 +16,7 @@ function help() {
   echo "                                  1: Grow list of known endpoints for each"
   echo "                                  2: Cyclic        default: 0)"
   echo "  -b/--offset-ports  Offsetports (default: 0, i.e. A:5001)"
+  echo "  -u/--use-persisted Boolean     (true|false       default: false)"
   echo ""
   echo "EXAMPLES:"
   echo "  scripts/startStandaloneAgency.sh"
@@ -108,6 +109,10 @@ while [[ ${1} ]]; do
       PORT_OFFSET=${2}
       shift
       ;;
+    -u|--use-persistence)
+      USE_PERSISTENCE=${2}
+      shift
+      ;;
     -h|--help)
       help; exit 1  
       ;;
@@ -178,14 +183,18 @@ else
 fi
 
 SFRE=2.5
-COMP=200000
+COMP=1000
+KEEP=500
 BASE=$(( $PORT_OFFSET + 5000 ))
 
 if [ "$GOSSIP_MODE" = "0" ]; then
-   GOSSIP_PEERS=" --agency.endpoint $TRANSPORT://[::1]:$BASE"
+  GOSSIP_PEERS=" --agency.endpoint $TRANSPORT://[::1]:$BASE"
 fi
 
-rm -rf agency
+if [ -z "$USE_PERSISTENCE" ]; then
+  rm -rf agency
+fi
+
 mkdir -p agency
 PIDS=""
 
@@ -221,6 +230,7 @@ for aid in "${aaid[@]}"; do
     $GOSSIP_PEERS \
     --agency.my-address $TRANSPORT://[::1]:$port \
     --agency.compaction-step-size $COMP \
+    --agency.compaction-keep-size $KEEP \
     --agency.pool-size $POOLSZ \
     --agency.size $NRAGENTS \
     --agency.supervision true \
