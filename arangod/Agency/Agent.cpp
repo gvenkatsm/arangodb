@@ -269,8 +269,10 @@ bool Agent::recvAppendEntriesRPC(
   LOG_TOPIC(TRACE, Logger::AGENCY) << "Got AppendEntriesRPC from "
     << leaderId << " with term " << term;
 
+  VPackSlice payload = queries->slice();
+
   // Update commit index
-  if (queries->slice().type() != VPackValueType::Array) {
+  if (payload.type() != VPackValueType::Array) {
     LOG_TOPIC(DEBUG, Logger::AGENCY)
       << "Received malformed entries for appending. Discarding!";
     return false;
@@ -282,19 +284,75 @@ bool Agent::recvAppendEntriesRPC(
     return false;
   }
 
-  size_t nqs = queries->slice().length();
+  // Check whether we have got a snapshot in the first position:
+  bool gotSnapshot = payload.length() > 0 &&
+                     payload[0].isObject() &&
+                     !payload[0].get("readDB").isNone();
+
+  // In case of a snapshot, there are three possibilities:
+  //   1. Our highest log index is smaller than the snapshot index, in this 
+  //      case we must throw away our complete local log and start from the
+  //      snapshot (note that snapshot indexes are always committed by a 
+  //      majority).
+  //   2. For the snapshot index we have an entry with this index in 
+  //      our log (and it is not yet compacted), in this case we verify
+  //      that the terms match and if so, we can simply ignore the
+  //      snapshot. If the term in our log entry is smaller (cannot be
+  //      larger because compaction snapshots are always committed), then
+  //      our complete log must be deleted as in 1.
+  //   3. Our highest log index is larger than the snapshot index but we
+  //      no longer have an entry in the log for the snapshot index due to
+  //      our own compaction. In this case we have compacted away the
+  //      snapshot index, therefore we know it was committed by a majority
+  //      and thus the snapshot can be ignored safely as well.
+  if (gotSnapshot) {
+    bool useSnapshot = false;   // if this remains, we ignore the snapshot
+
+    index_t snapshotIndex
+        = static_cast<index_t>(payload[0].get("index").getDouble());
+    term_t snapshotTerm
+        = static_cast<term_t>(payload[0].get("term").getDouble());
+    index_t ourLastIndex = _state.lastIndex();
+    if (ourLastIndex < snapshotIndex) {
+      useSnapshot = true;   // this implies that we completely eradicate our log
+    } else {
+      try {
+        log_t logEntry = _state.at(snapshotIndex);
+        if (logEntry.term != snapshotTerm) {  // can only be < as in 2.
+          useSnapshot = true;
+        }
+      } catch (...) {
+        // Simply ignore that we no longer have the entry, useSnapshot remains
+        // false and we will ignore the snapshot as in 3. above
+      }
+    }
+    if (useSnapshot) {
+      // Now we must completely erase our log and compaction snapshots and
+      // start from the snapshot
+      Store snapshot(this, "snapshot");
+      snapshot = payload[0].get("readDB");
+      if (!_state.restoreLogFromSnapshot(snapshot, snapshotIndex, snapshotTerm)) {
+        LOG_TOPIC(ERR, Logger::AGENCY)
+          << "Could not restore received log snapshot.";
+        return false;
+      }
+      // Now the log is empty, but this will soon be rectified.
+    }
+  }
+
+  size_t nqs = payload.length();
 
   // State machine, _lastCommitIndex to advance atomically
   if (nqs > 0) {
     
     MUTEX_LOCKER(ioLocker, _ioLock);
   
-    size_t ndups = _state.removeConflicts(queries);
+    size_t ndups = _state.removeConflicts(queries, gotSnapshot);
     
     if (nqs > ndups) {
       LOG_TOPIC(DEBUG, Logger::AGENCY)
         << "Appending " << nqs - ndups << " entries to state machine. ("
-        << nqs << ", " << ndups << "): " << queries->slice().toJson() ;
+        << nqs << ", " << ndups << "): " << payload.toJson() ;
       
       try {
         
@@ -351,6 +409,9 @@ void Agent::sendAppendEntriesRPC() {
 
       std::vector<log_t> unconfirmed = _state.get(lastConfirmed);
 
+      // Note that dispite compaction this vector can never be empty, since
+      // any compaction keeps at least one active log entry!
+
       index_t highest = unconfirmed.back().index;
 
       // _lastSent, _lastHighest: local and single threaded access
@@ -361,12 +422,48 @@ void Agent::sendAppendEntriesRPC() {
         continue;
       }
 
+      index_t lowest = unconfirmed.front().index;
+
+      bool needSnapshot = false;
+      Store snapshot(this, "snapshot");
+      index_t snapshotIndex;
+      term_t snapshotTerm;
+      if (lowest > lastConfirmed) {
+        // Ooops, compaction has thrown away so many log entries that
+        // we cannot actually update the follower. We need to send our
+        // latest snapshot instead:
+        needSnapshot = true;
+        bool success = false;
+        try {
+          success = _state.loadLastCompactedSnapshot(snapshot,
+              snapshotIndex, snapshotTerm);
+        } catch (std::exception const& e) {
+          LOG_TOPIC(WARN, Logger::AGENCY)
+            << "Exception thrown by loadLastCompactedSnapshot: "
+            << e.what();
+        }
+        if (!success) {
+          LOG_TOPIC(WARN, Logger::AGENCY)
+            << "Could not load last compacted snapshot, not sending appendEntriesRPC!";
+          continue;
+        }
+        if (snapshotTerm == 0) {
+          // No shapshot yet
+          needSnapshot = false;
+        }
+      }
+
       // RPC path
       std::stringstream path;
+      index_t prevLogIndex = unconfirmed.front().index;
+      index_t prevLogTerm = unconfirmed.front().term;
+      if (needSnapshot) {
+        prevLogIndex = snapshotIndex;
+        prevLogTerm = snapshotTerm;
+      }
       path << "/_api/agency_priv/appendEntries?term=" << t << "&leaderId="
-           << id() << "&prevLogIndex=" << unconfirmed.front().index
-           << "&prevLogTerm=" << unconfirmed.front().term << "&leaderCommit="
-           << commitIndex;
+           << id() << "&prevLogIndex=" << prevLogIndex
+           << "&prevLogTerm=" << prevLogTerm << "&leaderCommit=" << commitIndex;
       
       size_t toLog = 0;
       // Body
@@ -374,33 +471,48 @@ void Agent::sendAppendEntriesRPC() {
       builder.add(VPackValue(VPackValueType::Array));
       if (!_preparing &&
           ((system_clock::now() - _earliestPackage[followerId]).count() > 0)) {
-        for (size_t i = 1; i < unconfirmed.size(); ++i) {
+        if (needSnapshot) {
+          { VPackObjectBuilder guard(&builder);
+            builder.add(VPackValue("readDB"));
+            { VPackArrayBuilder guard2(&builder);
+              snapshot.dumpToBuilder(builder);
+            }
+            builder.add("term", VPackValue(static_cast<double>(snapshotTerm)));
+            builder.add("index", VPackValue(static_cast<double>(snapshotIndex)));
+          }
+        }
+        for (size_t i = 0; i < unconfirmed.size(); ++i) {
           auto const& entry = unconfirmed.at(i);
-          builder.add(VPackValue(VPackValueType::Object));
-          builder.add("index", VPackValue(entry.index));
-          builder.add("term", VPackValue(entry.term));
-          builder.add("query", VPackSlice(entry.entry->data()));
-          builder.add("clientId", VPackValue(entry.clientId));
-          builder.close();
-          highest = entry.index;
-          ++toLog;
+          if (entry.index > lastConfirmed) {
+            builder.add(VPackValue(VPackValueType::Object));
+            builder.add("index", VPackValue(entry.index));
+            builder.add("term", VPackValue(entry.term));
+            builder.add("query", VPackSlice(entry.entry->data()));
+            builder.add("clientId", VPackValue(entry.clientId));
+            builder.close();
+            highest = entry.index;
+            ++toLog;
+          }
         }
       }
       builder.close();
       
-      // Verbose output
-      if (unconfirmed.size() > 1) {
-        LOG_TOPIC(TRACE, Logger::AGENCY)
-          << "Appending " << unconfirmed.size() - 1 << " entries up to index "
-          << highest << " to follower " << followerId << ". Message: "
-          << builder.toJson();
-      }
-
       // Really leading?
       if (challengeLeadership()) {
         _constituent.candidate();
+        return;
       }
       
+      // Verbose output
+      if (toLog > 0) {
+        LOG_TOPIC(TRACE, Logger::AGENCY)
+          << "Appending " << toLog << " entries up to index "
+          << highest
+          << (needSnapshot ? " and a snapshot" : "")
+          << " to follower " << followerId << ". Message: "
+          << builder.toJson();
+      }
+
       // Send request
       auto headerFields =
         std::make_unique<std::unordered_map<std::string, std::string>>();

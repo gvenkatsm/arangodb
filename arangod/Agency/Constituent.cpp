@@ -156,7 +156,19 @@ bool Constituent::logUpToDate(
 
 bool Constituent::logMatches(
   arangodb::consensus::index_t prevLogIndex, term_t prevLogTerm) const {
-  return _agent->state().has(prevLogIndex, prevLogTerm);
+
+  int res = _agent->state().checkLog(prevLogIndex, prevLogTerm);
+  if (res == 1) {
+    return true;
+  } else if (res == -1) {
+    return false;
+  } else {
+    return true;  // This is important: If we have compacted away this log
+                  // entry, then we know that this or a later entry was
+                  // already committed by a majority and is therefore
+                  // set in stone. Therefore the check must return true
+                  // here and this is correct behaviour.
+  }
 }
 
 
@@ -293,33 +305,33 @@ bool Constituent::checkLeader(
     << ", prev-log-index: " << prevLogIndex << ", prev-log-term: "
     << prevLogTerm << ") in term " << _term;
 
-  if (term >= _term) {
-    _lastHeartbeatSeen = TRI_microtime();
-    LOG_TOPIC(TRACE, Logger::AGENCY)
-      << "setting last heartbeat: " << _lastHeartbeatSeen;
-    
-    if (term > _term) {
-      termNoLock(term);
-    }
+  if (term < _term) {
+    return false;
+  }
 
-    if (!logMatches(prevLogIndex,prevLogTerm)) {
-      return false;
-    }
-    
-    if (_leaderID != id) {
-      LOG_TOPIC(DEBUG, Logger::AGENCY)
-        << "Set _leaderID to " << id << " in term " << _term;
-      _leaderID = id;
-      TRI_ASSERT(_leaderID != _id);
-      if (_role != FOLLOWER) {
-        followNoLock(term);
-      }
-    }
-    
-    return true;
+  _lastHeartbeatSeen = TRI_microtime();
+  LOG_TOPIC(TRACE, Logger::AGENCY)
+    << "setting last heartbeat: " << _lastHeartbeatSeen;
+  
+  if (term > _term) {
+    termNoLock(term);
+  }
+
+  if (!logMatches(prevLogIndex, prevLogTerm)) {
+    return false;
   }
   
-  return false;
+  if (_leaderID != id) {
+    LOG_TOPIC(DEBUG, Logger::AGENCY)
+      << "Set _leaderID to " << id << " in term " << _term;
+    _leaderID = id;
+    TRI_ASSERT(_leaderID != _id);
+    if (_role != FOLLOWER) {
+      followNoLock(term);
+    }
+  }
+  
+  return true;
 }
 
 /// @brief Vote
