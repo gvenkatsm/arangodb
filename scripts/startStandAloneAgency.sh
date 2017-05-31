@@ -179,6 +179,7 @@ fi
 
 SFRE=2.5
 COMP=200
+KEEP=1
 BASE=$(( $PORT_OFFSET + 5000 ))
 
 if [ "$GOSSIP_MODE" = "0" ]; then
@@ -221,6 +222,7 @@ for aid in "${aaid[@]}"; do
     $GOSSIP_PEERS \
     --agency.my-address $TRANSPORT://[::1]:$port \
     --agency.compaction-step-size $COMP \
+    --agency.compaction-keep-size $KEEP \
     --agency.pool-size $POOLSZ \
     --agency.size $NRAGENTS \
     --agency.supervision true \
