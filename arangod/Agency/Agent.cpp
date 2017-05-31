@@ -309,9 +309,9 @@ bool Agent::recvAppendEntriesRPC(
     bool useSnapshot = false;   // if this remains, we ignore the snapshot
 
     index_t snapshotIndex
-        = static_cast<index_t>(payload[0].get("index").getDouble());
+        = static_cast<index_t>(payload[0].get("index").getNumber<index_t>());
     term_t snapshotTerm
-        = static_cast<term_t>(payload[0].get("term").getDouble());
+        = static_cast<term_t>(payload[0].get("term").getNumber<index_t>());
     index_t ourLastIndex = _state.lastIndex();
     if (ourLastIndex < snapshotIndex) {
       useSnapshot = true;   // this implies that we completely eradicate our log
@@ -477,8 +477,8 @@ void Agent::sendAppendEntriesRPC() {
             { VPackArrayBuilder guard2(&builder);
               snapshot.dumpToBuilder(builder);
             }
-            builder.add("term", VPackValue(static_cast<double>(snapshotTerm)));
-            builder.add("index", VPackValue(static_cast<double>(snapshotIndex)));
+            builder.add("term", VPackValue(snapshotTerm));
+            builder.add("index", VPackValue(snapshotIndex));
           }
         }
         for (size_t i = 0; i < unconfirmed.size(); ++i) {
