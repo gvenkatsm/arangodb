@@ -634,7 +634,7 @@ bool Agent::activateAgency() {
 }
 
 /// Load persistent state called once
-bool Agent::load() {
+void Agent::load() {
 
   DatabaseFeature* database =
       ApplicationServer::getFeature<DatabaseFeature>("Database");
@@ -653,48 +653,34 @@ bool Agent::load() {
         << "Failed to load persistent state on startup.";
   }
 
-  if (size() > 1) {
-    _inception->start();
-  } 
+  if (this->isStopping()) {
+    return;
+  }
 
-  LOG_TOPIC(DEBUG, Logger::AGENCY) << "Reassembling spearhead and read stores.";
-  _spearhead.applyLogEntries(
-    _state.slices(_commitIndex + 1), _commitIndex, _constituent.term(),
-    false  /* do not send callbacks */);
-  
   {
     CONDITION_LOCKER(guard, _appendCV);
     guard.broadcast();
   }
 
-  reportIn(id(), _state.lastLog().index);
-
   _compactor.start();
-  TRI_ASSERT(queryRegistry != nullptr);
 
   LOG_TOPIC(DEBUG, Logger::AGENCY) << "Starting spearhead worker.";
-  if (size() == 1 || !this->isStopping()) {
-    _spearhead.start();
-    _readDB.start();
-  }
- 
-  TRI_ASSERT(queryRegistry != nullptr);
-  if (size() == 1) {
-    activateAgency();
-  }
- 
-  if (size() == 1 || !this->isStopping()) {
-    _constituent.start(vocbase, queryRegistry);
-    persistConfiguration(term());
-  }
- 
-  if (size() == 1 || (!this->isStopping() && _config.supervision())) {
+  _spearhead.start();
+  _readDB.start();
+
+  _constituent.start(vocbase, queryRegistry);
+  persistConfiguration(term());
+
+  if (_config.supervision()) {
     LOG_TOPIC(DEBUG, Logger::AGENCY) << "Starting cluster sanity facilities";
     _supervision.start(this);
   }
 
-  return true;
-
+  if (size() > 1) {
+    _inception->start();
+  } else {
+    activateAgency();
+  }
 }
 
 /// Still leading? Under MUTEX from ::read or ::write

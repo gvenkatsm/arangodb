@@ -91,7 +91,7 @@ class Agent : public arangodb::Thread,
   bool prepareLead();
 
   /// @brief Load persistent state
-  bool load();
+  void load();
 
   /// @brief Unpersisted key-value-store
   trans_ret_t transient(query_t const&) override;
