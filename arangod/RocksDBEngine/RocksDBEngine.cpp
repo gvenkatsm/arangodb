@@ -67,6 +67,7 @@
 #include "RocksDBEngine/RocksDBV8Functions.h"
 #include "RocksDBEngine/RocksDBValue.h"
 #include "RocksDBEngine/RocksDBView.h"
+#include "Transaction/Options.h"
 #include "VocBase/replication-applier.h"
 #include "VocBase/ticks.h"
 
@@ -108,13 +109,12 @@ RocksDBEngine::RocksDBEngine(application_features::ApplicationServer* server)
     : StorageEngine(server, EngineName, FeatureName, new RocksDBIndexFactory()),
       _db(nullptr),
       _vpackCmp(new RocksDBComparator()),
-      _maxTransactionSize((std::numeric_limits<uint64_t>::max)()),
-      _intermediateTransactionCommitSize(32 * 1024 * 1024),
-      _intermediateTransactionCommitCount(100000),
-      _intermediateTransactionCommitEnabled(false),
+      _maxTransactionSize(transaction::Options::defaultMaxTransactionSize),
+      _intermediateCommitSize(transaction::Options::defaultIntermediateCommitSize),
+      _intermediateCommitCount(transaction::Options::defaultIntermediateCommitCount),
       _pruneWaitTime(10.0) {
-  // inherits order from StorageEngine but requires RocksDBOption that are used
-  // to configure this Engine and the MMFiles PesistentIndexFeature
+  // inherits order from StorageEngine but requires "RocksDBOption" that is used
+  // to configure this engine and the MMFiles PersistentIndexFeature
   startsAfter("RocksDBOption");
 }
 
@@ -133,22 +133,17 @@ void RocksDBEngine::collectOptions(
                      "transaction size limit (in bytes)",
                      new UInt64Parameter(&_maxTransactionSize));
 
-  options->addHiddenOption(
-      "--rocksdb.intermediate-transaction-count",
-      "an intermediate commit will be tried when a transaction "
+  options->addOption(
+      "--rocksdb.intermediate-commit-size",
+      "an intermediate commit will be performed automatically when a transaction "
       "has accumulated operations of this size (in bytes)",
-      new UInt64Parameter(&_intermediateTransactionCommitSize));
+      new UInt64Parameter(&_intermediateCommitSize));
 
-  options->addHiddenOption(
-      "--rocksdb.intermediate-transaction-count",
-      "an intermediate commit will be tried when this number of "
+  options->addOption(
+      "--rocksdb.intermediate-commit-count",
+      "an intermediate commit will be performed automatically when this number of "
       "operations is reached in a transaction",
-      new UInt64Parameter(&_intermediateTransactionCommitCount));
-  _intermediateTransactionCommitCount = 100 * 1000;
-
-  options->addHiddenOption(
-      "--rocksdb.intermediate-transaction", "enable intermediate transactions",
-      new BooleanParameter(&_intermediateTransactionCommitEnabled));
+      new UInt64Parameter(&_intermediateCommitCount));
 
   options->addOption("--rocksdb.wal-file-timeout",
                      "timeout after which unused WAL files are deleted",
@@ -156,7 +151,9 @@ void RocksDBEngine::collectOptions(
 }
 
 // validate the storage engine's specific options
-void RocksDBEngine::validateOptions(std::shared_ptr<options::ProgramOptions>) {}
+void RocksDBEngine::validateOptions(std::shared_ptr<options::ProgramOptions>) {
+  transaction::Options::setLimits(_maxTransactionSize, _intermediateCommitSize, _intermediateCommitCount);
+}
 
 // preparation phase for storage engine. can be used for internal setup.
 // the storage engine must not start any threads here or write any files
@@ -226,23 +223,25 @@ void RocksDBEngine::start() {
   // only compress levels >= 2
   _options.compression_per_level.resize(_options.num_levels);
   for (int level = 0; level < _options.num_levels; ++level) {
-    _options.compression_per_level[level] = ((level >= 2) ? rocksdb::kSnappyCompression : rocksdb::kNoCompression);
+    _options.compression_per_level[level] =
+        (((uint64_t) level >= opts->_numUncompressedLevels) ? rocksdb::kSnappyCompression
+                                                 : rocksdb::kNoCompression);
   }
-  
+
   // TODO: try out the effects of these options 
   // Number of files to trigger level-0 compaction. A value <0 means that
   // level-0 compaction will not be triggered by number of files at all.
   //
   // Default: 4
-  _options.level0_file_num_compaction_trigger = -1;
+  // _options.level0_file_num_compaction_trigger = -1;
 
   // Soft limit on number of level-0 files. We start slowing down writes at this
   // point. A value <0 means that no writing slow down will be triggered by
   // number of files in level-0.
-  _options.level0_slowdown_writes_trigger = -1;
+  // _options.level0_slowdown_writes_trigger = -1;
 
   // Maximum number of level-0 files.  We stop writes at this point.
-  _options.level0_stop_writes_trigger = 256;
+  // _options.level0_stop_writes_trigger = 256;
 
   _options.recycle_log_file_num = static_cast<size_t>(opts->_recycleLogFileNum);
   _options.compaction_readahead_size =
@@ -306,8 +305,50 @@ void RocksDBEngine::start() {
   columFamilies.emplace_back("IndexValue", cfOptions2); // 6
   columFamilies.emplace_back("UniqueIndexValue", cfOptions2);// 7
   // DO NOT FORGET TO DESTROY THE CFs ON CLOSE
-
+ 
   std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
+  size_t const numberOfColumnFamilies = RocksDBColumnFamily::numberOfColumnFamilies;
+  {
+    rocksdb::Options testOptions; 
+    testOptions.create_if_missing = false;
+    testOptions.create_missing_column_families = false;
+    std::vector<std::string> existingColumnFamilies;
+    rocksdb::Status status = rocksdb::DB::ListColumnFamilies(testOptions, _path, &existingColumnFamilies);
+    if (!status.ok()) {
+      // check if we have found the database directory or not
+      Result res = rocksutils::convertStatus(status);
+      if (res.errorNumber() != TRI_ERROR_ARANGO_IO_ERROR) {
+        // not an I/O error. so we better report the error and abort here
+        LOG_TOPIC(FATAL, arangodb::Logger::STARTUP)
+            << "unable to initialize RocksDB engine: " << status.ToString();
+        FATAL_ERROR_EXIT();
+      }
+    }
+
+    if (status.ok()) {
+      // we were able to open the database.
+      // now check which column families are present in the db
+      std::string names;
+      for (auto const& it : existingColumnFamilies) {
+        if (!names.empty()) {
+          names.append(", ");
+        }
+        names.append(it);
+      }
+      
+      LOG_TOPIC(DEBUG, arangodb::Logger::STARTUP) << "found existing column families: " << names;
+
+      if (existingColumnFamilies.size() < numberOfColumnFamilies) {
+        LOG_TOPIC(FATAL, arangodb::Logger::STARTUP) 
+            << "unexpected number of column families found in database (" << cfHandles.size() << "). " 
+            << "expecting at least " << numberOfColumnFamilies
+            << ". if you are upgrading from an alpha version of ArangoDB 3.2, " 
+            << "it is required to restart with a new database directory and re-import data";
+        FATAL_ERROR_EXIT();
+      }
+    }
+  }
+
   rocksdb::Status status = rocksdb::TransactionDB::Open(
       _options, transactionOptions, _path, columFamilies, &cfHandles, &_db);
 
@@ -321,6 +362,16 @@ void RocksDBEngine::start() {
         << "unable to initialize RocksDB column families";
     FATAL_ERROR_EXIT();
   }
+
+  if (cfHandles.size() < numberOfColumnFamilies) {
+    LOG_TOPIC(FATAL, arangodb::Logger::STARTUP) 
+        << "unexpected number of column families found in database. " 
+        << "got " << cfHandles.size() << ", expecting at least " << numberOfColumnFamilies;
+    FATAL_ERROR_EXIT();
+  }
+
+  TRI_ASSERT(cfHandles.size() >= numberOfColumnFamilies);
+
   // set our column families
   RocksDBColumnFamily::_other = cfHandles[0];
   RocksDBColumnFamily::_documents = cfHandles[1];
@@ -403,10 +454,8 @@ transaction::ContextData* RocksDBEngine::createTransactionContextData() {
 }
 
 TransactionState* RocksDBEngine::createTransactionState(
-    TRI_vocbase_t* vocbase) {
-  return new RocksDBTransactionState(
-      vocbase, _maxTransactionSize, _intermediateTransactionCommitEnabled,
-      _intermediateTransactionCommitSize, _intermediateTransactionCommitCount);
+    TRI_vocbase_t* vocbase, transaction::Options const& options) {
+  return new RocksDBTransactionState(vocbase, options);
 }
 
 TransactionCollection* RocksDBEngine::createTransactionCollection(

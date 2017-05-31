@@ -40,6 +40,7 @@
 #include "RocksDBEngine/RocksDBComparator.h"
 #include "RocksDBEngine/RocksDBCounterManager.h"
 #include "RocksDBEngine/RocksDBEngine.h"
+#include "RocksDBEngine/RocksDBIterators.h"
 #include "RocksDBEngine/RocksDBKey.h"
 #include "RocksDBEngine/RocksDBLogValue.h"
 #include "RocksDBEngine/RocksDBMethods.h"
@@ -607,18 +608,28 @@ bool RocksDBCollection::dropIndex(TRI_idx_iid_t iid) {
 std::unique_ptr<IndexIterator> RocksDBCollection::getAllIterator(
     transaction::Methods* trx, ManagedDocumentResult* mdr, bool reverse) {
   return std::unique_ptr<IndexIterator>(
-      primaryIndex()->allIterator(trx, mdr, reverse));
+                                        new RocksDBAllIndexIterator(_logicalCollection, trx, mdr, primaryIndex(), reverse));
 }
 
 std::unique_ptr<IndexIterator> RocksDBCollection::getAnyIterator(
     transaction::Methods* trx, ManagedDocumentResult* mdr) {
-  return std::unique_ptr<IndexIterator>(primaryIndex()->anyIterator(trx, mdr));
+  return std::unique_ptr<IndexIterator>(
+                                        new RocksDBAnyIndexIterator(_logicalCollection, trx, mdr, primaryIndex()));
 }
 
 void RocksDBCollection::invokeOnAllElements(
     transaction::Methods* trx,
     std::function<bool(DocumentIdentifierToken const&)> callback) {
-  primaryIndex()->invokeOnAllElements(trx, callback);
+  ManagedDocumentResult mmdr;
+  std::unique_ptr<IndexIterator> cursor(this->getAllIterator(trx, &mmdr, false));
+  bool cnt = true;
+  auto cb = [&](DocumentIdentifierToken token) {
+    if (cnt) {
+      cnt = callback(token);
+    }
+  };
+  while (cursor->next(cb, 1000) && cnt) {
+  }
 }
 
 ////////////////////////////////////
@@ -631,9 +642,10 @@ void RocksDBCollection::truncate(transaction::Methods* trx,
   TRI_ASSERT(_objectId != 0);
   TRI_voc_cid_t cid = _logicalCollection->cid();
   RocksDBTransactionState* state = rocksutils::toRocksTransactionState(trx);
-
   // delete documents
-  RocksDBMethods* mthd = state->rocksdbMethods();
+  RocksDBMethods* mthd;
+  mthd = state->rocksdbMethods();
+  
   RocksDBKeyBounds documentBounds =
       RocksDBKeyBounds::CollectionDocuments(this->objectId());
   
@@ -1199,9 +1211,10 @@ arangodb::Result RocksDBCollection::fillIndexes(
   ManagedDocumentResult mmdr;
   RocksDBIndex* ridx = static_cast<RocksDBIndex*>(added.get());
   RocksDBTransactionState* state = rocksutils::toRocksTransactionState(trx);
-  std::unique_ptr<IndexIterator> it(primIndex->allIterator(trx, &mmdr, false));
+  std::unique_ptr<IndexIterator> it(
+                                        new RocksDBAllIndexIterator(_logicalCollection, trx, &mmdr, primaryIndex(), false));
+  
   rocksdb::TransactionDB* db = globalRocksDB();
-
   uint64_t numDocsWritten = 0;
   // write batch will be reset each 5000 documents
   rocksdb::WriteBatchWithIndex batch(db->DefaultColumnFamily()->GetComparator(),
@@ -1420,7 +1433,7 @@ RocksDBOperationResult RocksDBCollection::lookupDocument(
     return res;
   }
 
-  RocksDBToken token = primaryIndex()->lookupKey(trx, key, mdr);
+  RocksDBToken token = primaryIndex()->lookupKey(trx, StringRef(key));
   TRI_voc_rid_t revisionId = token.revisionId();
 
   if (revisionId > 0) {
