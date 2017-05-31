@@ -184,7 +184,7 @@ fi
 
 SFRE=2.5
 COMP=200
-KEEP=100
+KEEP=1
 BASE=$(( $PORT_OFFSET + 5000 ))
 
 if [ "$GOSSIP_MODE" = "0" ]; then

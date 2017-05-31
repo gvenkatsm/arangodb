@@ -658,7 +658,11 @@ void Agent::load() {
         << "Failed to load persistent state on startup.";
   }
 
-  if (this->isStopping()) {
+  // Note that the agent thread is terminated immediately when there is only
+  // one agent, since no AppendEntriesRPC have to be issued. Therefore,
+  // this thread is almost certainly terminated (and thus isStopping() returns
+  // true), when we get here.
+  if (size() > 1 && this->isStopping()) {
     return;
   }
 
