@@ -168,6 +168,11 @@ bool Constituent::logMatches(
                   // already committed by a majority and is therefore
                   // set in stone. Therefore the check must return true
                   // here and this is correct behaviour.
+                  // The other case in which we do not have the log entry
+                  // is if it is so new that we have never heard about it
+                  // in this case we can safely return true here as well,
+                  // since we will replace our own log anyway in the very
+                  // near future.
   }
 }
 

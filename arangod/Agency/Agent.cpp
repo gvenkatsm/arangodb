@@ -337,6 +337,11 @@ bool Agent::recvAppendEntriesRPC(
         return false;
       }
       // Now the log is empty, but this will soon be rectified.
+      { 
+        MUTEX_LOCKER(liLocker, _liLock);
+        _nextCompactionAfter = (std::min)(_nextCompactionAfter,
+            snapshotIndex + _config.compactionStepSize());
+      }
     }
   }
 
