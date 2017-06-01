@@ -365,9 +365,10 @@ bool Agent::recvAppendEntriesRPC(
         MUTEX_LOCKER(ioLocker, _liLock);
         _lastApplied = _state.log(queries, ndups);
         
-      } catch (std::exception const&) {
+      } catch (std::exception const& e) {
         LOG_TOPIC(DEBUG, Logger::AGENCY)
-          << "Malformed query: " << __FILE__ << __LINE__;
+          << "Exception during log append: " << __FILE__ << __LINE__
+          << " " << e.what();
       }
       
     }
