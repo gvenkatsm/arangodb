@@ -349,6 +349,7 @@ bool Agent::recvAppendEntriesRPC(
   size_t nqs = payload.length();
 
   // State machine, _lastCommitIndex to advance atomically
+  bool ok = true;
   if (nqs > 0) {
     
     MUTEX_LOCKER(ioLocker, _ioLock);
@@ -364,6 +365,11 @@ bool Agent::recvAppendEntriesRPC(
 
         MUTEX_LOCKER(ioLocker, _liLock);
         _lastApplied = _state.log(queries, ndups);
+        if (_lastApplied < payload[nqs-1].get("index").getNumber<index_t>()) {
+          // We could not log all the entries in this query, we need to report
+          // this to the leader!
+          ok = false;
+        }
         
       } catch (std::exception const& e) {
         LOG_TOPIC(DEBUG, Logger::AGENCY)
@@ -383,7 +389,7 @@ bool Agent::recvAppendEntriesRPC(
     _compactor.wakeUp();
   }
 
-  return true;
+  return ok;
 }
 
 /// Leader's append entries
