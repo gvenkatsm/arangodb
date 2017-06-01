@@ -97,7 +97,9 @@ class Agent : public arangodb::Thread,
   trans_ret_t transient(query_t const&) override;
 
   /// @brief Attempt write
-  write_ret_t write(query_t const&) override;
+  ///        Startup flag should NEVER be discarded solely for purpose of
+  ///        persisting the agency configuration
+  write_ret_t write(query_t const&, bool discardStartup = false) override;
 
   /// @brief Read from agency
   read_ret_t read(query_t const&);
@@ -349,6 +351,7 @@ class Agent : public arangodb::Thread,
   /// @brief Agent is ready for RAFT
   std::atomic<bool> _ready;
   std::atomic<bool> _preparing;
+  std::atomic<bool> _startup;
 
   /// @brief Keep track of when I last took on leadership
   TimePoint _leaderSince;

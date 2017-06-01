@@ -56,7 +56,8 @@ Agent::Agent(config_t const& config)
     _activator(nullptr),
     _compactor(this),
     _ready(false),
-    _preparing(false) {
+    _preparing(false),
+    _startup(false) {
   _state.configure(this);
   _constituent.configure(this);
 }
@@ -360,7 +361,7 @@ bool Agent::recvAppendEntriesRPC(
         << nqs << ", " << ndups << "): " << payload.toJson() ;
       
       try {
-        
+
         MUTEX_LOCKER(ioLocker, _liLock);
         _lastApplied = _state.log(queries, ndups);
         
@@ -686,6 +687,7 @@ void Agent::load() {
   }
 
   if (size() > 1) {
+    _startup = true;
     _inception->start();
   } else {
     activateAgency();
@@ -743,6 +745,15 @@ trans_ret_t Agent::transact(query_t const& queries) {
     return trans_ret_t(false, leader);
   }
 
+  {
+    CONDITION_LOCKER(guard, _waitForCV);
+    while (_startup) {
+      _waitForCV.wait(100);
+      MUTEX_LOCKER(ioLocker, _ioLock);
+      _startup = (_commitIndex != _state.lastIndex());
+    }
+  }
+  
   // Apply to spearhead and get indices for log entries
   auto qs = queries->slice();
   addTrxsOngoing(qs);    // remember that these are ongoing
@@ -808,6 +819,15 @@ trans_ret_t Agent::transient(query_t const& queries) {
   auto leader = _constituent.leaderID();
   if (leader != id()) {
     return trans_ret_t(false, leader);
+  }
+
+  {
+    CONDITION_LOCKER(guard, _waitForCV);
+    while (_startup) {
+      _waitForCV.wait(100);
+      MUTEX_LOCKER(ioLocker, _ioLock);
+      _startup = (_commitIndex != _state.lastIndex());
+    }
   }
   
   // Apply to spearhead and get indices for log entries
@@ -886,7 +906,7 @@ inquire_ret_t Agent::inquire(query_t const& query) {
 
 
 /// Write new entries to replicated state and store
-write_ret_t Agent::write(query_t const& query) {
+write_ret_t Agent::write(query_t const& query, bool discardStartup) {
 
   std::vector<bool> applied;
   std::vector<index_t> indices;
@@ -896,7 +916,16 @@ write_ret_t Agent::write(query_t const& query) {
   if (multihost && leader != id()) {
     return write_ret_t(false, leader);
   }
-  
+
+  if (!discardStartup) {
+    CONDITION_LOCKER(guard, _waitForCV);
+    while (_startup) {
+      _waitForCV.wait(100);
+      MUTEX_LOCKER(ioLocker, _ioLock);
+      _startup = (_commitIndex != _state.lastIndex());
+    }
+  }
+
   addTrxsOngoing(query->slice());    // remember that these are ongoing
 
   // Apply to spearhead and get indices for log entries
@@ -938,8 +967,16 @@ read_ret_t Agent::read(query_t const& query) {
     return read_ret_t(false, leader);
   }
 
-  MUTEX_LOCKER(ioLocker, _ioLock);
+  {
+    CONDITION_LOCKER(guard, _waitForCV);
+    while (_startup) {
+      _waitForCV.wait(100);
+      MUTEX_LOCKER(ioLocker, _ioLock);
+      _startup = (_commitIndex != _state.lastIndex());
+    }
+  }
 
+  MUTEX_LOCKER(ioLocker, _ioLock);
   // Only leader else redirect
   if (challengeLeadership()) {
     _constituent.candidate();
@@ -1046,7 +1083,7 @@ void Agent::persistConfiguration(term_t t) {
   
   // In case we've lost leadership, no harm will arise as the failed write
   // prevents bogus agency configuration to be replicated among agents. ***
-  write(agency); 
+  write(agency, true); 
 
 }
 
@@ -1163,7 +1200,6 @@ void Agent::lead() {
     CONDITION_LOCKER(guard, _appendCV);
     guard.broadcast();
   }
-
 
   // Agency configuration
   term_t myterm;

@@ -780,7 +780,7 @@ bool State::loadRemaining() {
     }
     TRI_ASSERT(!_log.empty());
   }
-  
+
   return true;
 }
 
