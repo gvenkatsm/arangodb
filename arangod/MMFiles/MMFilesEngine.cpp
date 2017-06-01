@@ -22,6 +22,7 @@
 /// @author Jan Christoph Uhde
 ////////////////////////////////////////////////////////////////////////////////
 
+#include "ApplicationFeatures/ApplicationServer.h"
 #include "Basics/FileUtils.h"
 #include "Basics/MutexLocker.h"
 #include "Basics/ReadLocker.h"
@@ -39,7 +40,7 @@
 #include "MMFiles/MMFilesDatafileHelper.h"
 #include "MMFiles/MMFilesEngine.h"
 #include "MMFiles/MMFilesIndexFactory.h"
-#include "MMFiles/MMFilesInitialSync.h"
+#include "MMFiles/MMFilesIncrementalSync.h"
 #include "MMFiles/MMFilesLogfileManager.h"
 #include "MMFiles/MMFilesOptimizerRules.h"
 #include "MMFiles/MMFilesPersistentIndex.h"
@@ -695,6 +696,10 @@ int MMFilesEngine::getViews(TRI_vocbase_t* vocbase,
 }
 
 void MMFilesEngine::waitForSync(TRI_voc_tick_t tick) {
+  if (application_features::ApplicationServer::isStopping()) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_SHUTTING_DOWN);
+  }
+
   MMFilesLogfileManager::instance()->slots()->waitForTick(tick);
 }
 

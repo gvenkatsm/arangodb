@@ -82,7 +82,7 @@ void Compactor::wakeUp () {
 // @brief Begin shutdown
 void Compactor::beginShutdown() {
 
-  LOG_TOPIC(DEBUG, Logger::AGENCY) << "Shutting down compator personality";
+  LOG_TOPIC(DEBUG, Logger::AGENCY) << "Shutting down compactor personality";
     
   Thread::beginShutdown();
 

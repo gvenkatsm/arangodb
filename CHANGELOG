@@ -1,8 +1,12 @@
 devel
 -----
 
-* the rocksdb storage format was changed, users of the previous alpha versions
-  must delete the database directory and reimport their data
+* issue #2515: The replace-or-with-in optimization rule might prevent use of indexes
+
+* added `REGEX_REPLACE` AQL function
+
+* the RocksDB storage format was changed, users of the previous alpha versions
+  must delete the database directory and re-import their data
 
 * added server startup option `--query.fail-on-warning`
 
@@ -38,6 +42,7 @@ devel
 
 * arangoimp now has a `--threads` option to enable parallel imports of data
 
+* PR #2514: Foxx services that can't be fixed by self-healing now serve a 503 error
 
 v3.2.alpha4 (2017-04-25)
 ------------------------
