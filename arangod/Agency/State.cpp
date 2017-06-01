@@ -88,6 +88,9 @@ bool State::persist(arangodb::consensus::index_t index, term_t term,
                     arangodb::velocypack::Slice const& entry,
                     std::string const& clientId) const {
 
+  LOG_TOPIC(TRACE, Logger::AGENCY) << "persist index=" << index
+    << " term=" << term << " entry: " << entry.toJson();
+
   Builder body;
   {
     VPackObjectBuilder b(&body);
@@ -118,6 +121,9 @@ bool State::persist(arangodb::consensus::index_t index, term_t term,
   }
 
   res = trx.finish(result.code);
+
+  LOG_TOPIC(TRACE, Logger::AGENCY) << "persist done index=" << index
+    << " term=" << term << " entry: " << entry.toJson() << " ok:" << res.ok();
 
   return res.ok();
 }
@@ -223,21 +229,26 @@ arangodb::consensus::index_t State::log(query_t const& transactions,
       auto buf = std::make_shared<Buffer<uint8_t>>();
       buf->append((char const*)slice.get("query").begin(),
                   slice.get("query").byteSize());
-      // to RAM
+
+      // first to disk
+      if (!persist(idx, trm, slice.get("query"), clientId)) {
+        LOG_TOPIC(ERR, Logger::AGENCY)
+          << "State::log could not persist a log entry, this will be reported!"
+          << " Log entry index that failed: " << idx;
+        break;
+      }
+
+      // then to RAM
       _log.push_back(log_t(idx, trm, buf, clientId));
       _clientIdLookupTable.emplace(
         std::pair<std::string, arangodb::consensus::index_t>(clientId, idx));
-
-      // to disk
-      persist(idx, trm, slice.get("query"), clientId);
 
     } catch (std::exception const& e) {
       LOG_TOPIC(ERR, Logger::AGENCY) << e.what() << " " << __FILE__ << __LINE__;
     }
   }
 
-  TRI_ASSERT(!_log.empty());
-  return _log.back().index;
+  return _log.empty() ? 0 : _log.back().index;
 }
 
 size_t State::removeConflicts(query_t const& transactions,
@@ -248,11 +259,14 @@ size_t State::removeConflicts(query_t const& transactions,
   // already present (or even already compacted). As soon as we find one
   // for which the new term is higher than the locally stored term, we erase
   // the locally stored log from that position and return, such that we
-  // can append from this point on the new stuff.
+  // can append from this point on the new stuff. If our log is behind,
+  // we might find a position at which we do not yet have log entries,
+  // in which case we return and let others update our log.
   VPackSlice slices = transactions->slice();
   TRI_ASSERT(slices.isArray());
   size_t ndups = gotSnapshot ? 1 : 0;
 
+  LOG_TOPIC(TRACE, Logger::AGENCY) << "removeConflicts " << slices.toJson();
   try {
     MUTEX_LOCKER(logLock, _logLock);
 
@@ -262,6 +276,8 @@ size_t State::removeConflicts(query_t const& transactions,
       VPackSlice slice = slices[ndups];
       index_t idx = slice.get("index").getUInt();
       if (idx > lastIndex) {
+        LOG_TOPIC(TRACE, Logger::AGENCY) << "removeConflicts "
+          << idx << " > " << lastIndex << " break.";
         break;
       }
       term_t trm = slice.get("term").getUInt();
@@ -302,6 +318,9 @@ size_t State::removeConflicts(query_t const& transactions,
         // volatile logs
         _log.erase(_log.begin() + pos, _log.end());
             
+        LOG_TOPIC(TRACE, Logger::AGENCY)
+          << "removeConflicts done: ndups=" << ndups << " first log entry: "
+          << _log.front().index << " last log entry: " << _log.back().index;
         break;
       } else {
         ++ndups;
