@@ -158,10 +158,7 @@ std::vector<index_t> State::log(
     }
     
     if (applicable[j]) {
-      std::string clientId;
-      if (i.length()==3) {
-        clientId = i[2].copyString();
-      }
+      std::string clientId((i.length()==3) ? i[2].copyString() : "");
       idx[j] = logNonBlocking(_log.back().index+1, i[0], term, clientId, true);
     }
     ++j;
