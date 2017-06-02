@@ -107,6 +107,7 @@ bool State::persist(index_t index, term_t term,
   SingleCollectionTransaction trx(
     transactionContext, "log", AccessMode::Type::WRITE);
 
+  trx.addHint(transaction::Hints::Hint::SINGLE_OPERATION);
   Result res = trx.begin();
   if (!res.ok()) {
     THROW_ARANGO_EXCEPTION(res);
