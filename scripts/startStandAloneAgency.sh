@@ -4,19 +4,19 @@ function help() {
   echo "USAGE: scripts/startStandAloneAgency.sh [options]"
   echo ""
   echo "OPTIONS:"
-  echo "  -a/--agency-size   Agency size (odd integer      default: 3))"
-  echo "  -p/--pool-size     Pool size   (>= agency size   default: [agency size])"
-  echo "  -t/--transport     Protocol    (ssl|tcp          default: tcp)"
-  echo "  -l/--log-level     Log level   (INFO|DEBUG|TRACE default: INFO)"
-  echo "  -w/--wait-for-sync Boolean     (true|false       default: true)"
-  echo "  -m/--use-microtime Boolean     (true|false       default: false)"
-  echo "  -s/--start-delays  Integer     (                 default: 0)"
-  echo "  -r/--random-delays Integer     (true|false       default: false)"
-  echo "  -g/--gossip-mode   Integer     (0: Announce first endpoint to all"
-  echo "                                  1: Grow list of known endpoints for each"
-  echo "                                  2: Cyclic        default: 0)"
-  echo "  -b/--offset-ports  Offsetports (default: 0, i.e. A:5001)"
-  echo "  -u/--use-persisted Boolean     (true|false       default: false)"
+  echo "  -a/--agency-size     Agency size (odd integer      default: 3))"
+  echo "  -p/--pool-size       Pool size   (>= agency size   default: [agency size])"
+  echo "  -t/--transport       Protocol    (ssl|tcp          default: tcp)"
+  echo "  -l/--log-level       Log level   (INFO|DEBUG|TRACE default: INFO)"
+  echo "  -w/--wait-for-sync   Boolean     (true|false       default: true)"
+  echo "  -m/--use-microtime   Boolean     (true|false       default: false)"
+  echo "  -s/--start-delays    Integer     (                 default: 0)"
+  echo "  -r/--random-delays   Integer     (true|false       default: false)"
+  echo "  -g/--gossip-mode     Integer     (0: Announce first endpoint to all"
+  echo "                                    1: Grow list of known endpoints for each"
+  echo "                                    2: Cyclic        default: 0)"
+  echo "  -b/--offset-ports    Offsetports (default: 0, i.e. A:5001)"
+  echo "  -u/--use-persistence Boolean     (true|false       default: false)"
   echo ""
   echo "EXAMPLES:"
   echo "  scripts/startStandaloneAgency.sh"
@@ -110,7 +110,9 @@ while [[ ${1} ]]; do
       shift
       ;;
     -u|--use-persistence)
-      USE_PERSISTENCE=${2}
+      if [ "${2}" == "true" ] ; then
+          USE_PERSISTENCE=true
+      fi
       shift
       ;;
     -h|--help)
