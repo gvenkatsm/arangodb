@@ -796,19 +796,6 @@ trans_ret_t Agent::transact(query_t const& queries) {
     
     removeTrxsOngoing(qs);
 
-    // (either no writes or all preconditions failed)
-/*    if (maxind == 0) {
-      ret->clear();
-      ret->openArray();      
-      for (const auto& query : VPackArrayIterator(qs)) {
-        if (query[0].isObject()) {
-          ret->add(VPackValue(0));
-        } else if (query[0].isString()) {
-          _readDB.read(query, *ret);
-        }
-      }
-      }*/
-    
   }
   ret->close();
   

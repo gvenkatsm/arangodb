@@ -129,7 +129,7 @@ void Constituent::termNoLock(term_t t) {
       SingleCollectionTransaction trx(transactionContext, "election",
                                       AccessMode::Type::WRITE);
       
-      Result res = trx.begin();
+      auto res = trx.begin();
       
       if (!res.ok()) {
         THROW_ARANGO_EXCEPTION(res);
@@ -139,8 +139,18 @@ void Constituent::termNoLock(term_t t) {
       options.waitForSync = _agent->config().waitForSync();
       options.silent = true;
       
-      OperationResult result = trx.insert("election", body.slice(), options);
-      trx.finish(result.code);
+      OperationResult result;
+      try {
+        result = trx.insert("election", body.slice(), options);
+      } catch (std::exception const& e) {
+        LOG_TOPIC(FATAL, Logger::AGENCY)
+          << "Failed to persist RAFT election ballot. Bailing out."
+          << __FILE__ << ":" << __LINE__;
+        FATAL_ERROR_EXIT();
+      }
+
+      res = trx.finish(result.code);
+
     }
   }
 }
