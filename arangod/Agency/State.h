@@ -167,6 +167,12 @@ class State {
                               arangodb::consensus::term_t term);
 
  private:
+
+  /// @brief Log single log entry. Must be guarded by caller.
+  index_t logNonBlocking(
+    index_t idx, velocypack::Slice const& slice, term_t term,
+    std::string const& clientId = std::string(), bool leading = false);
+  
   /// @brief Save currentTerm, votedFor, log entries
   bool persist(index_t, term_t, arangodb::velocypack::Slice const&,
                std::string const&) const;

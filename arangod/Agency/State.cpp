@@ -77,14 +77,14 @@ inline static std::string timestamp() {
     std::string(mbstr) : std::string();
 }
 
-inline static std::string stringify(arangodb::consensus::index_t index) {
+inline static std::string stringify(index_t index) {
   std::ostringstream i_str;
   i_str << std::setw(20) << std::setfill('0') << index;
   return i_str.str();
 }
 
 /// Persist one entry
-bool State::persist(arangodb::consensus::index_t index, term_t term,
+bool State::persist(index_t index, term_t term,
                     arangodb::velocypack::Slice const& entry,
                     std::string const& clientId) const {
 
@@ -118,6 +118,7 @@ bool State::persist(arangodb::consensus::index_t index, term_t term,
   } catch (std::exception const& e) {
     LOG_TOPIC(ERR, Logger::AGENCY)
       << "Failed to persist log entry:" << e.what();
+    return false;
   }
 
   res = trx.finish(result.code);
@@ -130,13 +131,13 @@ bool State::persist(arangodb::consensus::index_t index, term_t term,
 
 
 /// Log transaction (leader)
-std::vector<arangodb::consensus::index_t> State::log(
+std::vector<index_t> State::log(
   query_t const& transactions, std::vector<bool> const& applicable, term_t term) {
 
-  std::vector<arangodb::consensus::index_t> idx(applicable.size());
-
+  TRI_ASSERT(!_log.empty()); // log must not ever be empty
+      
+  std::vector<index_t> idx(applicable.size());
   size_t j = 0;
-
   auto const& slice = transactions->slice();
 
   if (!slice.isArray()) {
@@ -145,7 +146,6 @@ std::vector<arangodb::consensus::index_t> State::log(
   }
 
   TRI_ASSERT(slice.length() == applicable.size());
-  
   MUTEX_LOCKER(mutexLocker, _logLock); 
   
   for (auto const& i : VPackArrayIterator(slice)) {
@@ -156,26 +156,14 @@ std::vector<arangodb::consensus::index_t> State::log(
         "Transaction syntax is [{<operations>}, {<preconditions>}, \"clientId\"]"
         );
     }
-
+    
     if (applicable[j]) {
-
-      std::shared_ptr<Buffer<uint8_t>> buf =
-          std::make_shared<Buffer<uint8_t>>();
-      buf->append((char const*)i[0].begin(), i[0].byteSize());
-
       std::string clientId;
       if (i.length()==3) {
         clientId = i[2].copyString();
       }
-      
-      TRI_ASSERT(!_log.empty()); // log must not ever be empty
-      idx[j] = _log.back().index + 1;
-      _log.push_back(log_t(idx[j], term, buf, clientId));  // log to RAM
-      _clientIdLookupTable.emplace(
-        std::pair<std::string, arangodb::consensus::index_t>(clientId, idx[j]));
-      persist(idx[j], term, i[0], clientId);               // log to disk
+      idx[j] = logNonBlocking(_log.back().index+1, i[0], term, clientId, true);
     }
-    
     ++j;
   }
 
@@ -183,29 +171,74 @@ std::vector<arangodb::consensus::index_t> State::log(
   
 }
 
-/// Log transaction (leader)
-arangodb::consensus::index_t State::log(
-  velocypack::Slice const& slice, term_t term, std::string const& clientId) {
 
-  arangodb::consensus::index_t idx = 0;
+index_t State::log(velocypack::Slice const& slice, term_t term,
+                   std::string const& clientId) {
+  MUTEX_LOCKER(mutexLocker, _logLock);  // log entries must stay in order
+  return logNonBlocking(_log.back().index+1, slice, term, clientId, true);
+}
+
+
+/// Log transaction (leader)
+index_t State::logNonBlocking(
+  index_t idx, velocypack::Slice const& slice, term_t term,
+  std::string const& clientId, bool leading) {
+
+  TRI_ASSERT(!_log.empty()); // log must not ever be empty
+
   auto buf = std::make_shared<Buffer<uint8_t>>();
   
-  MUTEX_LOCKER(mutexLocker, _logLock);  // log entries must stay in order
   buf->append((char const*)slice.begin(), slice.byteSize());
-  TRI_ASSERT(!_log.empty()); // log must not ever be empty
-  idx = _log.back().index + 1;
-  _log.push_back(log_t(idx, term, buf, clientId));  // log to RAM
-  _clientIdLookupTable.emplace(
-    std::pair<std::string, arangodb::consensus::index_t>(clientId, idx));
-  persist(idx, term, slice, clientId);               // log to disk
+  
+  if (!persist(idx, term, slice, clientId)) {         // log to disk or die
+    if (leading) {
+      LOG_TOPIC(FATAL, Logger::AGENCY)
+        << "RAFT leader fails to persist log entries!"
+        << __FILE__ << ":" << __LINE__;
+      FATAL_ERROR_EXIT();
+    } else {
+      LOG_TOPIC(ERR, Logger::AGENCY)
+        << "RAFT follower fails to persist log entries!"
+        << __FILE__ << ":" << __LINE__;
+      return 0;
+    }
+  }
 
+  try {
+    _log.push_back(log_t(idx, term, buf, clientId));  // log to RAM or die
+  } catch (std::bad_alloc const& e) {                 
+    if (leading) {
+      LOG_TOPIC(FATAL, Logger::AGENCY)
+        << "RAFT leader fails to allocate volatile log entries!"
+        << __FILE__ << ":" << __LINE__;
+      FATAL_ERROR_EXIT();
+    } else {
+      LOG_TOPIC(ERR, Logger::AGENCY)
+        << "RAFT follower fails to allocate volatile log entries!"
+        << __FILE__ << ":" << __LINE__;
+      return 0;
+    }
+  }
+
+  if (leading) {
+    try {
+      _clientIdLookupTable.emplace(            // keep track of client or die
+        std::pair<std::string, index_t>(clientId, idx));
+    } catch (...) {
+      LOG_TOPIC(FATAL, Logger::AGENCY)
+        << "RAFT leader fails to expand client lookup table!"
+        << __FILE__ << ":" << __LINE__;
+      FATAL_ERROR_EXIT();
+    } 
+  }
+  
   return _log.back().index;
   
 }
 
 /// Log transactions (follower)
-arangodb::consensus::index_t State::log(query_t const& transactions,
-                                        size_t ndups) {
+index_t State::log(query_t const& transactions, size_t ndups) {
+  
   VPackSlice slices = transactions->slice();
 
   TRI_ASSERT(slices.isArray());
@@ -218,34 +251,15 @@ arangodb::consensus::index_t State::log(query_t const& transactions,
   std::string clientId;
 
   for (size_t i = ndups; i < nqs; ++i) {
-    VPackSlice slice = slices[i];
+    VPackSlice const& slice = slices[i];
 
-    try {
-
-      auto idx = slice.get("index").getUInt();
-      auto trm = slice.get("term").getUInt();
-      clientId = slice.get("clientId").copyString();
-
-      auto buf = std::make_shared<Buffer<uint8_t>>();
-      buf->append((char const*)slice.get("query").begin(),
-                  slice.get("query").byteSize());
-
-      // first to disk
-      if (!persist(idx, trm, slice.get("query"), clientId)) {
-        LOG_TOPIC(ERR, Logger::AGENCY)
-          << "State::log could not persist a log entry, this will be reported!"
-          << " Log entry index that failed: " << idx;
-        break;
-      }
-
-      // then to RAM
-      _log.push_back(log_t(idx, trm, buf, clientId));
-      _clientIdLookupTable.emplace(
-        std::pair<std::string, arangodb::consensus::index_t>(clientId, idx));
-
-    } catch (std::exception const& e) {
-      LOG_TOPIC(ERR, Logger::AGENCY) << e.what() << " " << __FILE__ << __LINE__;
+    // first to disk
+    if (logNonBlocking(
+          slice.get("index").getUInt(), slice.get("query"),
+          slice.get("term").getUInt(), slice.get("clientId").copyString())==0) {
+      break;
     }
+
   }
 
   return _log.empty() ? 0 : _log.back().index;
@@ -335,8 +349,8 @@ size_t State::removeConflicts(query_t const& transactions,
 }
 
 /// Get log entries from indices "start" to "end"
-std::vector<log_t> State::get(arangodb::consensus::index_t start,
-                              arangodb::consensus::index_t end) const {
+std::vector<log_t> State::get(index_t start,
+                              index_t end) const {
   std::vector<log_t> entries;
   MUTEX_LOCKER(mutexLocker, _logLock); // Cannot be read lock (Compaction)
 
@@ -361,7 +375,7 @@ std::vector<log_t> State::get(arangodb::consensus::index_t start,
 
 /// Get log entries from indices "start" to "end"
 /// Throws std::out_of_range exception
-log_t State::at(arangodb::consensus::index_t index) const {
+log_t State::at(index_t index) const {
 
   MUTEX_LOCKER(mutexLocker, _logLock); // Cannot be read lock (Compaction)
 
@@ -393,7 +407,7 @@ log_t State::at(arangodb::consensus::index_t index) const {
 /// Check for a log entry, returns 0, if the log does not contain an entry
 /// with index `index`, 1, if it does contain one with term `term` and
 /// -1, if it does contain one with another term than `term`:
-int State::checkLog(arangodb::consensus::index_t index, term_t term) const {
+int State::checkLog(index_t index, term_t term) const {
 
   MUTEX_LOCKER(mutexLocker, _logLock); // Cannot be read lock (Compaction)
 
@@ -410,7 +424,7 @@ int State::checkLog(arangodb::consensus::index_t index, term_t term) const {
 }
 
 /// Have log with specified index and term
-bool State::has(arangodb::consensus::index_t index, term_t term) const {
+bool State::has(index_t index, term_t term) const {
 
   MUTEX_LOCKER(mutexLocker, _logLock); // Cannot be read lock (Compaction)
 
@@ -429,8 +443,8 @@ bool State::has(arangodb::consensus::index_t index, term_t term) const {
 
 
 /// Get vector of past transaction from 'start' to 'end'
-std::vector<VPackSlice> State::slices(arangodb::consensus::index_t start,
-                                      arangodb::consensus::index_t end) const {
+std::vector<VPackSlice> State::slices(index_t start,
+                                      index_t end) const {
   std::vector<VPackSlice> slices;
   MUTEX_LOCKER(mutexLocker, _logLock); // Cannot be read lock (Compaction)
 
@@ -464,7 +478,7 @@ std::vector<VPackSlice> State::slices(arangodb::consensus::index_t start,
 
 /// Get log entry by log index, copy entry because we do no longer have the
 /// lock after the return
-log_t State::operator[](arangodb::consensus::index_t index) const {
+log_t State::operator[](index_t index) const {
   MUTEX_LOCKER(mutexLocker, _logLock);  // Cannot be read lock (Compaction)
   TRI_ASSERT(index - _cur < _log.size());
   return _log.at(index - _cur);
@@ -549,7 +563,7 @@ bool State::loadCollections(TRI_vocbase_t* vocbase,
       VPackSlice value = arangodb::basics::VelocyPackHelper::EmptyObjectValue();
       buf->append(value.startAs<char const>(), value.byteSize());
       _log.push_back(
-        log_t(arangodb::consensus::index_t(0), term_t(0), buf, std::string()));
+        log_t(index_t(0), term_t(0), buf, std::string()));
       persist(0, 0, value, std::string());
     }
     return true;
@@ -804,7 +818,7 @@ bool State::loadRemaining() {
 }
 
 /// Find entry by index and term
-bool State::find(arangodb::consensus::index_t prevIndex, term_t prevTerm) {
+bool State::find(index_t prevIndex, term_t prevTerm) {
   MUTEX_LOCKER(mutexLocker, _logLock);
   if (prevIndex > _log.size()) {
     return false;
@@ -813,7 +827,7 @@ bool State::find(arangodb::consensus::index_t prevIndex, term_t prevTerm) {
 }
 
 /// Log compaction
-bool State::compact(arangodb::consensus::index_t cind) {
+bool State::compact(index_t cind) {
   // We need to compute the state at index cind and 
   //   cind <= _lastAppliedIndex
   // and usually it is < because compactionKeepSize > 0. We start at the
@@ -857,7 +871,7 @@ bool State::compact(arangodb::consensus::index_t cind) {
 }
 
 /// Compact volatile state
-bool State::compactVolatile(arangodb::consensus::index_t cind) {
+bool State::compactVolatile(index_t cind) {
   // Note that we intentionally keep the index cind although it is, strictly
   // speaking, no longer necessary. This is to make sure that _log does not
   // become empty! DO NOT CHANGE! This is used elsewhere in the code!
@@ -871,7 +885,7 @@ bool State::compactVolatile(arangodb::consensus::index_t cind) {
 }
 
 /// Compact persisted state
-bool State::compactPersisted(arangodb::consensus::index_t cind) {
+bool State::compactPersisted(index_t cind) {
   // Note that we intentionally keep the index cind although it is, strictly
   // speaking, no longer necessary. This is to make sure that _log does not
   // become empty! DO NOT CHANGE! This is used elsewhere in the code!
@@ -902,7 +916,7 @@ bool State::compactPersisted(arangodb::consensus::index_t cind) {
 }
 
 /// Remove outdated compaction snapshots
-bool State::removeObsolete(arangodb::consensus::index_t cind) {
+bool State::removeObsolete(index_t cind) {
   if (cind > 3 * _agent->config().compactionStepSize()) {
     auto bindVars = std::make_shared<VPackBuilder>();
     bindVars->openObject();
@@ -928,7 +942,7 @@ bool State::removeObsolete(arangodb::consensus::index_t cind) {
 
 
 /// Persist the globally commited truth
-bool State::persistReadDB(arangodb::consensus::index_t cind) {
+bool State::persistReadDB(index_t cind) {
   if (checkCollection("compact")) {
     std::stringstream i_str;
     i_str << std::setw(20) << std::setfill('0') << cind;
@@ -963,7 +977,7 @@ bool State::persistReadDB(arangodb::consensus::index_t cind) {
 }
 
 /// Persist a compaction snapshot
-bool State::persistCompactionSnapshot(arangodb::consensus::index_t cind,
+bool State::persistCompactionSnapshot(index_t cind,
                                       arangodb::consensus::term_t term,
                                       arangodb::consensus::Store& snapshot) {
   if (checkCollection("compact")) {
@@ -1153,7 +1167,7 @@ std::vector<std::vector<log_t>> State::inquire(query_t const& query) const {
 }
 
 // Index of last log entry
-arangodb::consensus::index_t State::lastIndex() const {
+index_t State::lastIndex() const {
   MUTEX_LOCKER(mutexLocker, _logLock); 
   return (!_log.empty()) ? _log.back().index : 0; 
 }
