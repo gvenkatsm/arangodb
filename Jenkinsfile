@@ -31,28 +31,30 @@ pipeline {
         }
 
         stage('Basic Tests') {
-            parallel(
-                'jsunity': {
-                    node('linux or mac') {
-                        script {
-                            try {
-                                sh './Installation/Pipeline/jslint.sh'
-                            }
-                            catch (exc) {
-                                currentBuild.result = 'UNSTABLE'
+            steps {
+                parallel(
+                    'jsunity': {
+                        node('linux or mac') {
+                            script {
+                                try {
+                                    sh './Installation/Pipeline/jslint.sh'
+                                }
+                                catch (exc) {
+                                    currentBuild.result = 'UNSTABLE'
+                                }
                             }
                         }
-                    }
-                },
+                    },
 
-                'test-ss-mm-cc-lx': {
-                    node('linux') {
-                        unstash 'build-cc-lx'
+                    'test-ss-mm-cc-lx': {
+                        node('linux') {
+                            unstash 'build-cc-lx'
 
-                        sh '/Installation/Pipeline/test_ss_mm_cc_lx.sh'
+                            sh '/Installation/Pipeline/test_ss_mm_cc_lx.sh'
+                        }
                     }
-                }
-            )
+                )
+            }
         }
     }
 }
