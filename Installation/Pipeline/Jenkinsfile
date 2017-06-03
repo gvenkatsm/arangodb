@@ -21,6 +21,19 @@ pipeline {
                         }
                     }
 
+                    script {
+                        checkout(
+                            changelog: false,
+                            poll: false,
+                            scm: [
+                                $class: 'GitSCM',
+                                branches: [[name: "*/${env.BRANCH_NAME}"]],
+                                doGenerateSubmoduleConfigurations: false,
+                                extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'enterprise']],
+                                submoduleCfg: [],
+                                userRemoteConfigs: [[credentialsId: '8d893d23-6714-4f35-a239-c847c798e080', url: 'https://github.com/arangodb/enterprise']]])
+                    }
+
                     sh 'rm -rf build build-jenkins'
 
                     stash includes: '**', name: 'source'
