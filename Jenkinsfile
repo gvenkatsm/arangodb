@@ -10,6 +10,7 @@ pipeline {
                     milestone(1)
 
                     checkout scm
+                    sh 'rm -rf build build-jenkins'
 
                     stash includes: '**', name: 'source'
                 }
@@ -25,7 +26,7 @@ pipeline {
 
                     sh './Installation/Pipeline/build_cc_lx.sh 16'
 
-                    stash includes: 'build/**,etc/**,js/**,scripts/**,tests/**,UnitTests/**', name: 'build-cc-lx'
+                    stash includes: 'build/**,etc/**,Installation/Pipeline/**,js/**,scripts/**,tests/**,UnitTests/**', name: 'build-cc-lx'
                 }
             }
         }
@@ -34,7 +35,7 @@ pipeline {
             steps {
                 parallel(
                     'jsunity': {
-                        node('linux or mac') {
+                        node('linux || mac') {
                             script {
                                 try {
                                     sh './Installation/Pipeline/jslint.sh'
@@ -50,7 +51,7 @@ pipeline {
                         node('linux') {
                             unstash 'build-cc-lx'
 
-                            sh '/Installation/Pipeline/test_ss_mm_cc_lx.sh'
+                            sh './Installation/Pipeline/test_ss_mm_cc_lx.sh'
                         }
                     }
                 )
