@@ -101,5 +101,27 @@ pipeline {
                 )
             }
         }
+
+        stage('Build EE') { 
+            steps { 
+                parallel(
+                    'build-en-ma': {
+                        node('mac') {
+                            milestone(3)
+
+                            unstash 'source'
+
+                            sh './Installation/Pipeline/build_en_mc.sh 16'
+
+                            stash includes: 'build/**,etc/**,Installation/Pipeline/**,js/**,scripts/**,tests/**,UnitTests/**', name: 'build-en-mc'
+                        }
+                    },
+
+                    'build-en-wi': {
+                        sh 'echo WINDOWS'
+                    }
+                )
+            }
+        }
     }
 }
