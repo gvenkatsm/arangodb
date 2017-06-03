@@ -26,11 +26,12 @@ pipeline {
 
                     unstash 'source'
 
-                    sh 'pwd'
-                    sh 'ls -la'
                     sh './Installation/Pipeline/build_cc_lx.sh 16'
 
-                    stash includes: 'build/** js/** etc/**', name: 'build-cc-lx'
+                    stash includes: 'build/**,js/**,etc/**', name: 'build-cc-lx'
+
+                    sh 'pwd'
+                    sh 'ls -la'
                 }
             }
         }
