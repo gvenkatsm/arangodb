@@ -97,7 +97,7 @@ pipeline {
 
                             sh './Installation/Pipeline/test_ss_mm_cc_lx.sh 8'
                         }
-                    }
+                    },
 
                     'test-cl-rd-cc-lx': {
                         node('linux') {
