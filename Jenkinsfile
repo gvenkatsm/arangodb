@@ -9,6 +9,8 @@ pipeline {
                 parallel(
                     'build': {
                         node('linux') {
+                            sh 'pwd'
+                            sh 'ls -l'
                             sh './Installation/Pipeline/build_cc_lx.sh 16'
                         }
                     },
