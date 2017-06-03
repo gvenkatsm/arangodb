@@ -15,17 +15,18 @@ pipeline {
 
         stage('Build CC LX') { 
             steps { 
-                milestone(2)
-
-
                 parallel(
                     'build': {
                         node('linux') {
+                            milestone(2)
+
                             unstash 'source'
 
                             sh 'pwd'
                             sh 'ls -l'
                             sh './Installation/Pipeline/build_cc_lx.sh 16'
+
+                            stash includes: 'build/** js/** etc/**', name: 'build-cc-lx'
                         }
                     },
 
