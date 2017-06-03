@@ -98,6 +98,15 @@ pipeline {
                             sh './Installation/Pipeline/test_ss_mm_cc_lx.sh 8'
                         }
                     }
+
+                    'test-cl-rd-cc-lx': {
+                        node('linux') {
+                            unstash 'build-cc-lx'
+
+                            sh './Installation/Pipeline/test_cl_rd_cc_lx.sh 8'
+                        }
+                    }
+
                 )
             }
         }
