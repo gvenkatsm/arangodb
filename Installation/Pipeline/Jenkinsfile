@@ -95,7 +95,9 @@ pipeline {
                         node('linux') {
                             unstash 'build-cc-lx'
 
-                            sh './Installation/Pipeline/test_ss_mm_cc_lx.sh 8'
+                            lock('test_ss_mm_cc_lx') {
+                                sh './Installation/Pipeline/test_ss_mm_cc_lx.sh 8'
+                            }
                         }
                     },
 
@@ -103,7 +105,9 @@ pipeline {
                         node('linux') {
                             unstash 'build-cc-lx'
 
-                            sh './Installation/Pipeline/test_cl_rd_cc_lx.sh 8'
+                            lock('test_cl_rd_cc_lx') {
+                                sh './Installation/Pipeline/test_cl_rd_cc_lx.sh 8'
+                            }
                         }
                     }
 
