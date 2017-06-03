@@ -118,7 +118,7 @@ pipeline {
                         node('mac') {
                             unstash 'source'
 
-                            sh './Installation/Pipeline/build_en_mc.sh 16'
+                            sh './Installation/Pipeline/build_ee_mc.sh 16'
 
                             stash includes: 'build/**,etc/**,Installation/Pipeline/**,js/**,scripts/**,tests/**,UnitTests/**', name: 'build-ee-mc'
                         }
@@ -128,7 +128,7 @@ pipeline {
                         node('windows') {
                             unstash 'source'
 
-                            bat './Installation/Pipeline/build_en_wi.bat'
+                            bat './Installation/Pipeline/build_ee_wi.bat'
 
                             stash includes: 'build/**,etc/**,Installation/Pipeline/**,js/**,scripts/**,tests/**,UnitTests/**', name: 'build-ee-wi'
                         }
