@@ -113,11 +113,11 @@ pipeline {
 
         stage('Build EE') { 
             steps { 
+                milestone(3)
+
                 parallel(
                     'build-en-ma': {
                         node('mac') {
-                            milestone(3)
-
                             unstash 'source'
 
                             sh './Installation/Pipeline/build_en_mc.sh 16'
