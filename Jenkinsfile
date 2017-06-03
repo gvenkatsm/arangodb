@@ -36,6 +36,8 @@ pipeline {
                 parallel(
                     'jsunity': {
                         node('linux || mac') {
+                            unstash 'build-cc-lx'
+
                             script {
                                 try {
                                     sh './Installation/Pipeline/jslint.sh'
@@ -51,7 +53,7 @@ pipeline {
                         node('linux') {
                             unstash 'build-cc-lx'
 
-                            sh './Installation/Pipeline/test_ss_mm_cc_lx.sh'
+                            sh './Installation/Pipeline/test_ss_mm_cc_lx.sh 8'
                         }
                     }
                 )

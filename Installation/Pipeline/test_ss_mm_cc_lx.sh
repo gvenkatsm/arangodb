@@ -17,11 +17,13 @@ export TMPDIR=$(pwd)/tmp
 build/bin/arangod --version
 OPTS="--skipNondeterministic true --skipTimeCritical true  --configDir etc/jenkins --skipLogAnalysis true"
 
+# note that: shebang does not work if path contains a '@'
+
 echo "
 scripts/unittest boost --skipCache false 2>&1
 scripts/unittest shell_client              --minPort 9000 --maxPort 9009 $OPTS 2>&1
 scripts/unittest shell_server              --minPort 9010 --maxPort 9019 $OPTS 2>&1
-scripts/unittest arangosh                  --minPort 9020 --maxPort 9029 $OPTS 2>&1
+scripts/unittest arangosh                  --minPort 9020 --maxPort 9029 $OPTS --skipShebang true 2>&1
 scripts/unittest arangobench               --minPort 9030 --maxPort 9039 $OPTS 2>&1
 scripts/unittest authentication            --minPort 9040 --maxPort 9049 $OPTS  2>&1
 scripts/unittest authentication_parameters --minPort 9050 --maxPort 9059 $OPTS 2>&1
@@ -45,4 +47,4 @@ scripts/unittest replication_ongoing       --minPort 9220 --maxPort 9229 $OPTS 2
 scripts/unittest dump                      --minPort 9230 --maxPort 9239 $OPTS 2>&1
 scripts/unittest server_http               --minPort 9240 --maxPort 9249 $OPTS 2>&1
 scripts/unittest agency                    --minPort 9250 --maxPort 9259 $OPTS 2>&1
-" | parallel -j8
+" | parallel -j$concurrency
