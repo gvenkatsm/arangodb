@@ -11,9 +11,6 @@ pipeline {
 
                     checkout scm
 
-                    sh 'pwd'
-                    sh 'ls -la'
-
                     stash includes: '**', name: 'source'
                 }
             }
@@ -29,9 +26,6 @@ pipeline {
                     sh './Installation/Pipeline/build_cc_lx.sh 16'
 
                     stash includes: 'build/**,js/**,etc/**', name: 'build-cc-lx'
-
-                    sh 'pwd'
-                    sh 'ls -la'
                 }
             }
         }
