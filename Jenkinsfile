@@ -10,6 +10,10 @@ pipeline {
                     milestone(1)
 
                     checkout scm
+
+                    sh 'pwd'
+                    sh 'ls -la'
+
                     stash includes: '**', name: 'source'
                 }
             }
