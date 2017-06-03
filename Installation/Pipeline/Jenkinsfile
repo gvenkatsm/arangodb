@@ -113,8 +113,6 @@ pipeline {
 
         stage('Build EE') { 
             steps { 
-                milestone(3)
-
                 parallel(
                     'build-ee-ma': {
                         node('mac') {
