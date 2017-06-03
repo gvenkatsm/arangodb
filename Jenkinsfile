@@ -6,10 +6,12 @@ pipeline {
     stages {
         stage('GIT CC') {
             steps { 
-                milestone(1)
+                node('master') {
+                    milestone(1)
 
-                checkout scm
-                stash includes: '**', name: 'source'
+                    checkout scm
+                    stash includes: '**', name: 'source'
+                }
             }
         }
 

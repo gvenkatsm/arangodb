@@ -8,7 +8,7 @@ mkdir -p build/etc
 mkdir -p build/tests
 
 cd build-jenkins
-CXXFLAGS=-fno-omit-frame-pointer cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DUSE_MAINTAINER_MODE=On -DCATCH_TESTS=On -DUSE_FAILURE_TESTS=On -DDEBUG_SYNC_REPLICATION=On ..
+CXXFLAGS=-fno-omit-frame-pointer cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DUSE_MAINTAINER_MODE=On -DUSE_CATCH_TESTS=On -DUSE_FAILURE_TESTS=On -DDEBUG_SYNC_REPLICATION=On ..
 make -j$concurrency
 
 # copy binaries to preserve them
