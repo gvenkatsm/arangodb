@@ -4,12 +4,23 @@ pipeline {
     agent any 
 
     stages {
-        stage('GIT CC') {
+        stage('Checkout') {
             steps { 
                 node('master') {
                     milestone(1)
 
-                    checkout scm
+                    script {
+                        retry(3) {
+                            try {
+                                checkout scm
+                            }
+                            catch (err) {
+                                echo "GITHUB checkout failed, retrying in 5min"
+                                sleep 300
+                            }
+                        }
+                    }
+
                     sh 'rm -rf build build-jenkins'
 
                     stash includes: '**', name: 'source'
