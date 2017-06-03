@@ -17,14 +17,14 @@ pipeline {
             steps { 
                 milestone(2)
 
-                parallel(
-                    'build': {
+                // parallel(
+                //     'build': {
                         node('linux') {
                             sh 'pwd'
                             sh 'ls -l'
                             sh './Installation/Pipeline/build_cc_lx.sh 16'
                         }
-                    }
+                    // }
 
                     // 'jslint': {
                     //     node('linux || mac') {
