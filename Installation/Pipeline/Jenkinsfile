@@ -128,9 +128,9 @@ pipeline {
                         node('windows') {
                             unstash 'source'
 
-                            bat './Installation/Pipeline/build_ee_wi.bat'
+                            // bat './Installation/Pipeline/build_ee_wi.bat'
 
-                            stash includes: 'build/**,etc/**,Installation/Pipeline/**,js/**,scripts/**,tests/**,UnitTests/**', name: 'build-ee-wi'
+                            // stash includes: 'build/**,etc/**,Installation/Pipeline/**,js/**,scripts/**,tests/**,UnitTests/**', name: 'build-ee-wi'
                         }
                     }
                 )
