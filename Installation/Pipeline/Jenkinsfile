@@ -68,7 +68,7 @@ pipeline {
 
                     sh './Installation/Pipeline/build_cc_lx.sh 16'
 
-                    stash includes: 'build/**,etc/**,Installation/Pipeline/**,js/**,scripts/**,tests/**,UnitTests/**', name: 'build-cc-lx'
+                    stash includes: 'build/**,etc/**,Installation/Pipeline/**,js/**,scripts/**,tests/**,UnitTests/**,utils/**', name: 'build-cc-lx'
                 }
             }
         }
