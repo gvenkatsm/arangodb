@@ -90,8 +90,6 @@ pipeline {
                     }
                 )
             }
-            steps { 
-            }
         }
 
         stage('JS Lint') {
