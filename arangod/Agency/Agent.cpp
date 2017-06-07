@@ -422,8 +422,16 @@ void Agent::sendAppendEntriesRPC() {
 
       std::vector<log_t> unconfirmed = _state.get(lastConfirmed);
 
-      // Note that dispite compaction this vector can never be empty, since
+      // Note that despite compaction this vector can never be empty, since
       // any compaction keeps at least one active log entry!
+
+      if (unconfirmed.empty()) {
+        LOG_TOPIC(ERR, Logger::AGENCY) << "Unexpected empty unconfirmed: "
+          << "lastConfirmed=" << lastConfirmed << " commitIndex="
+          << commitIndex;
+      }
+
+      TRI_ASSERT(!unconfirmed.empty());
 
       index_t highest = unconfirmed.back().index;
 
@@ -922,18 +930,36 @@ write_ret_t Agent::write(query_t const& query, bool discardStartup) {
 
   addTrxsOngoing(query->slice());    // remember that these are ongoing
 
+  auto slice = query->slice();
+  size_t ntrans = slice.length();
+  size_t npacks = ntrans/_config.maxAppendSize();
+  if (ntrans%_config.maxAppendSize()!=0) {
+    npacks++;
+  }
+
   // Apply to spearhead and get indices for log entries
-  {
+  // Avoid keeping lock indefinitely
+  for (size_t i = 0, l = 0; i < npacks; ++i) {
+    query_t chunk = std::make_shared<Builder>();
+    {
+      VPackArrayBuilder b(chunk.get());
+      for (size_t j = 0; j < _config.maxAppendSize() && l < ntrans; ++j, ++l) {
+        chunk->add(slice.at(l));
+      }
+    }
+
     MUTEX_LOCKER(ioLocker, _ioLock);
-    
+
     // Only leader else redirect
     if (multihost && challengeLeadership()) {
       _constituent.candidate();
       return write_ret_t(false, NO_LEADER);
     }
     
-    applied = _spearhead.applyTransactions(query);
-    indices = _state.log(query, applied, term());
+    applied = _spearhead.applyTransactions(chunk);
+    auto tmp = _state.log(chunk, applied, term());
+    indices.insert(indices.end(), tmp.begin(), tmp.end());
+
   }
 
   removeTrxsOngoing(query->slice());

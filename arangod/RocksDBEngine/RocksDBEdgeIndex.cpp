@@ -33,6 +33,7 @@
 #include "Cache/CachedValue.h"
 #include "Cache/TransactionalCache.h"
 #include "Indexes/SimpleAttributeEqualityMatcher.h"
+#include "Indexes/IndexResult.h"
 #include "Transaction/Context.h"
 #include "Transaction/Helpers.h"
 #include "Transaction/Methods.h"
@@ -84,37 +85,6 @@ RocksDBEdgeIndexIterator::~RocksDBEdgeIndexIterator() {
     // return the VPackBuilder to the transaction context
     _trx->transactionContextPtr()->returnBuilder(_keys.release());
   }
-}
-
-void RocksDBEdgeIndexIterator::resizeMemory() {
-  /*
-  // Increase size by factor of two.
-  // TODO Adjust this has potential to kill memory...
-  uint64_t* tmp = new uint64_t[_memSize * 2];
-  std::memcpy(tmp, _inplaceMemory, _memSize * sizeof(uint64_t));
-  _memSize *= 2;
-  delete[] _inplaceMemory;
-  _inplaceMemory = tmp;
-  */
-}
-
-void RocksDBEdgeIndexIterator::reserveInplaceMemory(uint64_t count) {
-  /*
-  // NOTE: count the number of cached edges, 1 is the size
-  if (count + 1 > _memSize) {
-    // In this case the current memory is too small.
-    // Reserve more
-    delete[] _inplaceMemory;
-    _inplaceMemory = new uint64_t[count + 1];
-    _memSize = count + 1;
-  }
-  // else NOOP, we have enough memory to write to
-  */
-}
-
-uint64_t RocksDBEdgeIndexIterator::valueLength() const {
-  return 0;
-  // return *_inplaceMemory;
 }
 
 void RocksDBEdgeIndexIterator::resetInplaceMemory() { _builder.clear(); }
@@ -285,10 +255,11 @@ bool RocksDBEdgeIndexIterator::nextExtra(ExtraCallback const& cb,
             TRI_ASSERT(_builderIterator.value().isNumber());
             RocksDBToken tkn{
                 _builderIterator.value().getNumericValue<uint64_t>()};
+            
             _builderIterator.next();
+            
             TRI_ASSERT(_builderIterator.valid());
             TRI_ASSERT(_builderIterator.value().isString());
-
             cb(tkn, _builderIterator.value());
 
             _builderIterator.next();
@@ -297,7 +268,6 @@ bool RocksDBEdgeIndexIterator::nextExtra(ExtraCallback const& cb,
           _builderIterator = VPackArrayIterator(
               arangodb::basics::VelocyPackHelper::EmptyArrayValue());
         } else {
-          _copyCounter++;
           // We need to copy it.
           // And then we just get back to beginning of the loop
           _builder.clear();
@@ -327,12 +297,12 @@ void RocksDBEdgeIndexIterator::lookupInRocksDB(StringRef fromTo) {
   rocksdb::Comparator const* cmp = _index->comparator();
 
   cache::Cache *cc = _cache.get();
-  _builder.openArray();
+  _builder.openArray(true);
   auto end = _bounds.end();
   while (_iterator->Valid() && (cmp->Compare(_iterator->key(), end) < 0)) {
     TRI_voc_rid_t revisionId = RocksDBKey::revisionId(_iterator->key());
     RocksDBToken token(revisionId);
-    
+
     // adding revision ID and _from or _to value
     _builder.add(VPackValue(token.revisionId()));
     StringRef vertexId = RocksDBValue::vertexId(_iterator->value());
@@ -438,7 +408,7 @@ void RocksDBEdgeIndex::toVelocyPack(VPackBuilder& builder, bool withFigures,
   builder.close();
 }
 
-int RocksDBEdgeIndex::insert(transaction::Methods* trx,
+Result RocksDBEdgeIndex::insert(transaction::Methods* trx,
                              TRI_voc_rid_t revisionId, VPackSlice const& doc,
                              bool isRollback) {
   VPackSlice fromTo = doc.get(_directionAttr);
@@ -448,10 +418,10 @@ int RocksDBEdgeIndex::insert(transaction::Methods* trx,
   VPackSlice toFrom = _isFromIndex ? transaction::helpers::extractToFromDocument(doc) : transaction::helpers::extractFromFromDocument(doc);
   TRI_ASSERT(toFrom.isString());
   RocksDBValue value = RocksDBValue::EdgeIndexValue(StringRef(toFrom));
-  
+
   // blacklist key in cache
   blackListKey(fromToRef);
-  
+
   // acquire rocksdb transaction
   RocksDBMethods* mthd = rocksutils::toRocksMethods(trx);
   Result r = mthd->Put(_cf, rocksdb::Slice(key.string()), value.string(),
@@ -460,9 +430,9 @@ int RocksDBEdgeIndex::insert(transaction::Methods* trx,
     std::hash<StringRef> hasher;
     uint64_t hash = static_cast<uint64_t>(hasher(fromToRef));
     _estimator->insert(hash);
-    return TRI_ERROR_NO_ERROR;
+    return IndexResult(TRI_ERROR_NO_ERROR);
   } else {
-    return r.errorNumber();
+    return IndexResult(r.errorNumber(), this);
   }
 }
 
@@ -471,7 +441,7 @@ int RocksDBEdgeIndex::insertRaw(RocksDBMethods*, TRI_voc_rid_t,
   THROW_ARANGO_EXCEPTION(TRI_ERROR_NOT_IMPLEMENTED);
 }
 
-int RocksDBEdgeIndex::remove(transaction::Methods* trx,
+Result RocksDBEdgeIndex::remove(transaction::Methods* trx,
                              TRI_voc_rid_t revisionId, VPackSlice const& doc,
                              bool isRollback) {
   // VPackSlice primaryKey = doc.get(StaticStrings::KeyString);
@@ -493,9 +463,9 @@ int RocksDBEdgeIndex::remove(transaction::Methods* trx,
     std::hash<StringRef> hasher;
     uint64_t hash = static_cast<uint64_t>(hasher(fromToRef));
     _estimator->remove(hash);
-    return TRI_ERROR_NO_ERROR;
+    return IndexResult(TRI_ERROR_NO_ERROR);
   } else {
-    return res.errorNumber();
+    return IndexResult(res.errorNumber(), this);
   }
 }
 
@@ -666,7 +636,7 @@ void RocksDBEdgeIndex::warmup(arangodb::transaction::Methods* trx) {
             needsInsert = false;
           } else {
             needsInsert = true;
-            builder.openArray();
+            builder.openArray(true);
           }
         }
 
@@ -699,7 +669,7 @@ void RocksDBEdgeIndex::warmup(arangodb::transaction::Methods* trx) {
             needsInsert = false;
           } else {
             needsInsert = true;
-            builder.openArray();
+            builder.openArray(true);
           }
         }
         if (needsInsert) {
@@ -707,9 +677,11 @@ void RocksDBEdgeIndex::warmup(arangodb::transaction::Methods* trx) {
           RocksDBToken token(revisionId);
           if (rocksColl->readDocument(trx, token, mmdr)) {
             builder.add(VPackValue(token.revisionId()));
+            
             VPackSlice doc(mmdr.vpack());
-            TRI_ASSERT(doc.isObject());
-            builder.add(doc);
+            VPackSlice toFrom = _isFromIndex ? transaction::helpers::extractToFromDocument(doc) : transaction::helpers::extractFromFromDocument(doc);
+            TRI_ASSERT(toFrom.isString());
+            builder.add(toFrom);
 #ifdef USE_MAINTAINER_MODE
           } else {
             // Data Inconsistency.
