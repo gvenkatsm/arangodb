@@ -63,6 +63,7 @@ pipeline {
             steps { 
                 parallel(
                     'cc-lx': {
+                        stage("TEST") { steps {
                         node('linux') {
                             unstash 'source'
                             sh './Installation/Pipeline/build_cc_lx.sh 16'
@@ -72,6 +73,7 @@ pipeline {
                                   name: 'build-cc-lx'
 
                         }
+                        } }
                     },
 
                     'build-ee-ma': {
