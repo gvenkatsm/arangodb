@@ -7,8 +7,6 @@ pipeline {
         stage('Checkout') {
             steps { 
                 node('master') {
-                    milestone(1)
-
                     script {
                         retry(3) {
                             try {
@@ -34,7 +32,8 @@ pipeline {
                                     doGenerateSubmoduleConfigurations: false,
                                     extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'enterprise']],
                                     submoduleCfg: [],
-                                    userRemoteConfigs: [[credentialsId: '8d893d23-6714-4f35-a239-c847c798e080', url: 'https://github.com/arangodb/enterprise']]])
+                                    userRemoteConfigs: [[credentialsId: '8d893d23-6714-4f35-a239-c847c798e080',
+                                                         url: 'https://github.com/arangodb/enterprise']]])
                         }
                         catch (err) {
                             echo "Failed ${env.BRANCH_NAME}, trying enterprise branch devel"
@@ -48,7 +47,8 @@ pipeline {
                                     doGenerateSubmoduleConfigurations: false,
                                     extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'enterprise']],
                                     submoduleCfg: [],
-                                    userRemoteConfigs: [[credentialsId: '8d893d23-6714-4f35-a239-c847c798e080', url: 'https://github.com/arangodb/enterprise']]])
+                                    userRemoteConfigs: [[credentialsId: '8d893d23-6714-4f35-a239-c847c798e080',
+                                                         url: 'https://github.com/arangodb/enterprise']]])
                         }
                     }
 
@@ -59,81 +59,55 @@ pipeline {
             }
         }
 
-        stage('Build CC LX') { 
+        stage('Build & Test') { 
             steps { 
-                node('linux') {
-                    milestone(2)
-
-                    unstash 'source'
-
-                    sh './Installation/Pipeline/build_cc_lx.sh 16'
-
-                    stash includes: 'build/**,etc/**,Installation/Pipeline/**,js/**,scripts/**,tests/**,UnitTests/**,utils/**', name: 'build-cc-lx'
-                }
-            }
-        }
-
-        stage('Basic Tests') {
-            steps {
                 parallel(
-                    'jsunity': {
-                        node('linux || mac') {
-                            unstash 'build-cc-lx'
-
-                            script {
-                                try {
-                                    sh './Installation/Pipeline/jslint.sh'
-                                }
-                                catch (exc) {
-                                    currentBuild.result = 'UNSTABLE'
-                                }
-                            }
-                        }
-                    },
-
-                    'test-ss-mm-cc-lx': {
+                    'cc-lx': {
                         node('linux') {
-                            unstash 'build-cc-lx'
-
+                            unstash 'source'
+                            sh './Installation/Pipeline/build_cc_lx.sh 16'
                             sh './Installation/Pipeline/test_ss_mm_cc_lx.sh 8'
+
+                            stash includes: 'build/**,etc/**,Installation/Pipeline/**,js/**,scripts/**,tests/**,UnitTests/**,utils/**',
+                                  name: 'build-cc-lx'
+
                         }
                     },
 
-                    'test-cl-rd-cc-lx': {
-                        node('linux') {
-                            unstash 'build-cc-lx'
-
-                            sh './Installation/Pipeline/test_cl_rd_cc_lx.sh 8'
-                        }
-                    }
-
-                )
-            }
-        }
-
-        stage('Build EE') { 
-            steps { 
-                parallel(
                     'build-ee-ma': {
                         node('mac') {
                             unstash 'source'
-
                             sh './Installation/Pipeline/build_ee_mc.sh 16'
-
-                            stash includes: 'build/**,etc/**,Installation/Pipeline/**,js/**,scripts/**,tests/**,UnitTests/**', name: 'build-ee-mc'
+                            sh './Installation/Pipeline/test_ss_mm_cc_lx.sh 8'
                         }
                     },
 
                     'build-ee-wi': {
                         node('windows') {
                             unstash 'source'
-
-                            // bat './Installation/Pipeline/build_ee_wi.bat'
-
-                            // stash includes: 'build/**,etc/**,Installation/Pipeline/**,js/**,scripts/**,tests/**,UnitTests/**', name: 'build-ee-wi'
+                            bat './Installation/Pipeline/build_ee_wi.bat'
                         }
                     }
                 )
+            }
+            steps { 
+            }
+        }
+
+        stage('JS Lint') {
+            steps {
+                node('linux') {
+                    unstash 'build-cc-lx'
+
+                    script {
+                        try {
+                            sh './Installation/Pipeline/jslint.sh'
+                        }
+                        catch (exc) {
+                            currentBuild.result = 'UNSTABLE'
+                        }
+                    }
+                }
             }
         }
     }
